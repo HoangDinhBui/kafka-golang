@@ -1,0 +1,846 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Apache Kafka — Phase 0 Architecture & Engineering Guide</title>
+  <!-- Google Fonts: Inter & JetBrains Mono for authentic engineering docs style -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+  
+  <style>
+    /* Stripe / Vercel Engineering Docs Style (Crisp Light Mode) */
+    :root {
+      --bg-page: #ffffff;
+      --bg-sidebar: #f8fafc;
+      --bg-surface: #f8fafc;
+      --bg-code: #0f172a;
+      
+      --border-color: #e2e8f0;
+      --border-light: #cbd5e1;
+      
+      --text-main: #334155;
+      --text-muted: #64748b;
+      --text-heading: #0f172a;
+      
+      --accent: #0284c7;
+      --accent-dim: rgba(2, 132, 199, 0.08);
+      --green: #059669;
+      
+      --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background-color: var(--bg-page);
+      color: var(--text-main);
+      font-family: var(--font-sans);
+      font-size: 15px;
+      line-height: 1.7;
+      display: flex;
+      min-height: 100vh;
+    }
+
+    /* SIDEBAR NAVIGATION */
+    aside {
+      width: 280px;
+      background: var(--bg-sidebar);
+      border-right: 1px solid var(--border-color);
+      position: fixed;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      padding: 32px 24px;
+      overflow-y: auto;
+    }
+
+    .brand-title {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text-heading);
+      letter-spacing: -0.3px;
+      margin-bottom: 4px;
+    }
+
+    .brand-subtitle {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-bottom: 32px;
+    }
+
+    .nav-section-title {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--text-muted);
+      margin: 24px 0 12px;
+    }
+
+    .nav-list {
+      list-style: none;
+    }
+
+    .nav-item {
+      margin-bottom: 4px;
+    }
+
+    .nav-link {
+      display: block;
+      padding: 8px 12px;
+      border-radius: 6px;
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 13.5px;
+      font-weight: 500;
+      transition: all 0.15s ease;
+    }
+
+    .nav-link:hover {
+      color: var(--text-heading);
+      background: rgba(0, 0, 0, 0.04);
+    }
+
+    .nav-link.active {
+      color: var(--accent);
+      background: var(--accent-dim);
+      font-weight: 600;
+    }
+
+    /* MAIN CONTENT AREA */
+    main {
+      margin-left: 280px;
+      flex: 1;
+      max-width: 960px;
+      padding: 48px 64px 120px;
+    }
+
+    /* DOCUMENT HEADER */
+    .doc-header {
+      margin-bottom: 40px;
+      padding-bottom: 24px;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .doc-meta {
+      font-size: 13px;
+      color: var(--accent);
+      font-family: var(--font-mono);
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+
+    h1 {
+      font-size: 32px;
+      font-weight: 800;
+      color: var(--text-heading);
+      letter-spacing: -0.8px;
+      margin-bottom: 12px;
+    }
+
+    .doc-lead {
+      font-size: 16px;
+      color: var(--text-muted);
+    }
+
+    /* DIAGRAM & SIMULATOR CONTAINERS */
+    .interactive-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 24px;
+      margin: 28px 0 40px;
+    }
+
+    .sim-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+      gap: 16px;
+    }
+
+    .sim-title {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--text-heading);
+    }
+
+    .btn-group {
+      display: flex;
+      gap: 10px;
+    }
+
+    .btn {
+      padding: 8px 16px;
+      border-radius: 6px;
+      border: 1px solid var(--border-light);
+      background: #ffffff;
+      color: var(--text-heading);
+      font-family: var(--font-sans);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+    }
+
+    .btn:hover {
+      background: #f1f5f9;
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #ffffff;
+    }
+    .btn-primary:hover {
+      background: #0369a1;
+      color: #ffffff;
+    }
+
+    .sim-stage {
+      background: #ffffff;
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 24px;
+      min-height: 280px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .sim-packet {
+      position: absolute;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      background: var(--accent);
+      color: #ffffff;
+      font-size: 10px;
+      font-weight: 700;
+      font-family: var(--font-mono);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 2px 8px rgba(2, 132, 199, 0.4);
+      transition: all 0.7s cubic-bezier(0.25, 1, 0.5, 1);
+      z-index: 10;
+    }
+
+    .terminal-console {
+      background: var(--bg-code);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 14px 18px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: #4ade80;
+      height: 110px;
+      overflow-y: auto;
+      margin-top: 16px;
+    }
+
+    /* TYPOGRAPHY & SECTIONS */
+    section {
+      margin-bottom: 64px;
+      scroll-margin-top: 32px;
+    }
+
+    h2 {
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--text-heading);
+      letter-spacing: -0.4px;
+      margin: 40px 0 16px;
+      padding-top: 16px;
+      border-top: 1px solid var(--border-color);
+    }
+
+    section > h2:first-child {
+      border-top: none;
+      padding-top: 0;
+      margin-top: 0;
+    }
+
+    h3 {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text-heading);
+      margin: 28px 0 12px;
+    }
+
+    p {
+      margin-bottom: 16px;
+      color: var(--text-main);
+    }
+
+    ul, ol {
+      margin: 0 0 20px 24px;
+      color: var(--text-main);
+    }
+
+    li {
+      margin-bottom: 8px;
+    }
+
+    strong {
+      color: var(--text-heading);
+      font-weight: 700;
+    }
+
+    code {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      background: #f1f5f9;
+      color: #0369a1;
+      padding: 2px 6px;
+      border-radius: 4px;
+      border: 1px solid #e2e8f0;
+    }
+
+    /* CODE BLOCKS */
+    pre {
+      background: var(--bg-code);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 20px;
+      font-family: var(--font-mono);
+      font-size: 13px;
+      line-height: 1.6;
+      color: #e2e8f0;
+      overflow-x: auto;
+      margin: 20px 0;
+    }
+
+    pre code {
+      background: none;
+      padding: 0;
+      border: none;
+      color: inherit;
+    }
+
+    .comment { color: #64748b; font-style: italic; }
+    .keyword { color: #38bdf8; font-weight: 600; }
+    .string { color: #fde047; }
+    .type { color: #4ade80; }
+
+    /* CLEAN TABLES */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+      margin: 24px 0;
+      border: 1px solid var(--border-color);
+      background: #ffffff;
+    }
+
+    th {
+      background: var(--bg-surface);
+      color: var(--text-heading);
+      font-weight: 700;
+      text-align: left;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    td {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border-color);
+      color: var(--text-main);
+    }
+
+    tr:last-child td {
+      border-bottom: none;
+    }
+
+    /* AUTHENTIC BLOCKQUOTES */
+    blockquote {
+      margin: 20px 0;
+      padding: 16px 20px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      color: var(--text-muted);
+      font-size: 14px;
+    }
+
+    blockquote strong {
+      color: var(--text-heading);
+    }
+
+    /* RESPONSIVE */
+    @media (max-width: 900px) {
+      body { flex-direction: column; }
+      aside { width: 100%; position: relative; height: auto; }
+      main { margin-left: 0; padding: 32px 24px; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- SIDEBAR NAVIGATION -->
+  <aside>
+    <div class="brand-title">Kafka Engineering</div>
+    <div class="brand-subtitle">Phase 0 Architecture Blueprint</div>
+
+    <div class="nav-section-title">Diagrams & Simulators</div>
+    <ul class="nav-list">
+      <li class="nav-item"><a class="nav-link" href="#interactive-simulator">Live Stream Simulator</a></li>
+    </ul>
+
+    <div class="nav-section-title">Core Concepts</div>
+    <ul class="nav-list">
+      <li class="nav-item"><a class="nav-link active" href="#section-1">1. Topic, Partition & Offset</a></li>
+      <li class="nav-item"><a class="nav-link" href="#section-2">2. Storage & Segment Index</a></li>
+      <li class="nav-item"><a class="nav-link" href="#section-3">3. Producer Routing & Acks</a></li>
+      <li class="nav-item"><a class="nav-link" href="#section-4">4. Consumer Group & Rebalance</a></li>
+      <li class="nav-item"><a class="nav-link" href="#section-5">5. Replication & High Watermark</a></li>
+      <li class="nav-item"><a class="nav-link" href="#section-6">6. KRaft Consensus Mode</a></li>
+      <li class="nav-item"><a class="nav-link" href="#section-7">7. Retention vs Compaction</a></li>
+      <li class="nav-item"><a class="nav-link" href="#section-8">8. Wire Protocol Framing</a></li>
+    </ul>
+  </aside>
+
+  <!-- MAIN DOCUMENT CONTENT -->
+  <main>
+
+    <header class="doc-header">
+      <div class="doc-meta">ARCHITECTURE & SPECIFICATION DOC</div>
+      <h1>Apache Kafka Internals & Architecture Guide</h1>
+      <p class="doc-lead">
+        A technical guide covering Commit Log storage engines, distributed consensus, wire protocol framing, and core architectural concepts of Apache Kafka.
+      </p>
+    </header>
+
+    <!-- ARCHITECTURE OVERVIEW DIAGRAM WITH LIGHT THEME & MOVING PACKETS -->
+    <div class="interactive-card">
+      <div class="sim-title" style="margin-bottom: 16px;">System Data Flow & Replica Replication (Orthogonal Routing)</div>
+      
+      <svg class="cluster-diagram" viewBox="0 0 760 220">
+        <!-- BACKGROUND CLUSTER BOX -->
+        <rect x="140" y="10" width="380" height="190" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5" rx="8"/>
+        <text x="330" y="32" fill="#475569" font-family="Inter" font-size="12" font-weight="700" text-anchor="middle">Kafka Cluster (Topic: order-events)</text>
+
+        <!-- BROKER 1 -->
+        <g transform="translate(160, 48)">
+          <rect width="160" height="135" fill="#ffffff" stroke="#cbd5e1" rx="6"/>
+          <text x="80" y="22" fill="#0f172a" font-family="Inter" font-size="12" font-weight="700" text-anchor="middle">Broker 1</text>
+          
+          <rect x="12" y="36" width="136" height="38" fill="#0284c7" rx="4"/>
+          <text x="80" y="54" fill="#ffffff" font-family="Inter" font-size="11" font-weight="700" text-anchor="middle">Leader Partition 0</text>
+          <text x="80" y="66" fill="#e0f2fe" font-family="JetBrains Mono" font-size="9" text-anchor="middle">LEO: 6 | HW: 5</text>
+
+          <rect x="12" y="82" width="136" height="38" fill="#f1f5f9" stroke="#cbd5e1" rx="4"/>
+          <text x="80" y="100" fill="#475569" font-family="Inter" font-size="11" font-weight="600" text-anchor="middle">Replica Partition 1</text>
+          <text x="80" y="112" fill="#64748b" font-family="JetBrains Mono" font-size="9" text-anchor="middle">ISR (In-Sync)</text>
+        </g>
+
+        <!-- BROKER 2 -->
+        <g transform="translate(340, 48)">
+          <rect width="160" height="135" fill="#ffffff" stroke="#cbd5e1" rx="6"/>
+          <text x="80" y="22" fill="#0f172a" font-family="Inter" font-size="12" font-weight="700" text-anchor="middle">Broker 2</text>
+          
+          <rect x="12" y="36" width="136" height="38" fill="#f1f5f9" stroke="#cbd5e1" rx="4"/>
+          <text x="80" y="54" fill="#475569" font-family="Inter" font-size="11" font-weight="600" text-anchor="middle">Replica Partition 0</text>
+          <text x="80" y="66" fill="#64748b" font-family="JetBrains Mono" font-size="9" text-anchor="middle">ISR (In-Sync)</text>
+
+          <rect x="12" y="82" width="136" height="38" fill="#0284c7" rx="4"/>
+          <text x="80" y="100" fill="#ffffff" font-family="Inter" font-size="11" font-weight="700" text-anchor="middle">Leader Partition 1</text>
+          <text x="80" y="112" fill="#e0f2fe" font-family="JetBrains Mono" font-size="9" text-anchor="middle">LEO: 6 | HW: 5</text>
+        </g>
+
+        <!-- PRODUCER BOX -->
+        <rect x="10" y="90" width="90" height="50" fill="#ffffff" stroke="#0284c7" stroke-width="1.5" rx="6"/>
+        <text x="55" y="112" fill="#0284c7" font-family="Inter" font-size="12" font-weight="700" text-anchor="middle">Producer</text>
+        <text x="55" y="126" fill="#64748b" font-family="Inter" font-size="9" text-anchor="middle">(Client App)</text>
+
+        <!-- CONSUMER BOX -->
+        <rect x="560" y="90" width="180" height="50" fill="#ffffff" stroke="#059669" stroke-width="1.5" rx="6"/>
+        <text x="650" y="112" fill="#059669" font-family="Inter" font-size="12" font-weight="700" text-anchor="middle">Consumer Group</text>
+        <text x="650" y="126" fill="#64748b" font-family="Inter" font-size="9" text-anchor="middle">Consumer A & Consumer B</text>
+
+        <!-- CLEAN ORTHOGONAL 90-DEGREE MANHATTAN PATHS -->
+        <path id="ortho-p0" d="M 100 115 H 130 V 103 H 172" stroke="#0284c7" stroke-width="1.5" stroke-dasharray="4 4" fill="none"/>
+        <path id="ortho-p1" d="M 100 115 H 120 V 149 H 352" stroke="#0284c7" stroke-width="1.5" stroke-dasharray="4 4" fill="none"/>
+        <path id="ortho-c0" d="M 308 103 H 326 V 68 H 540 V 115 H 560" stroke="#059669" stroke-width="1.5" stroke-dasharray="4 4" fill="none"/>
+        <path id="ortho-c1" d="M 488 149 H 530 V 115 H 560" stroke="#059669" stroke-width="1.5" stroke-dasharray="4 4" fill="none"/>
+
+        <!-- ANIMATED MOVING PACKETS -->
+        <circle r="4" fill="#0284c7">
+          <animateMotion dur="2.2s" repeatCount="indefinite" path="M 100 115 H 130 V 103 H 172"/>
+        </circle>
+        <circle r="4" fill="#0284c7">
+          <animateMotion dur="2.8s" repeatCount="indefinite" path="M 100 115 H 120 V 149 H 352"/>
+        </circle>
+        <circle r="4" fill="#059669">
+          <animateMotion dur="3.0s" repeatCount="indefinite" path="M 308 103 H 326 V 68 H 540 V 115 H 560"/>
+        </circle>
+        <circle r="4" fill="#059669">
+          <animateMotion dur="2.4s" repeatCount="indefinite" path="M 488 149 H 530 V 115 H 560"/>
+        </circle>
+      </svg>
+    </div>
+
+    <!-- LIVE PACKET FLOW SIMULATOR COMPONENT -->
+    <div class="interactive-card" id="interactive-simulator">
+      <div class="sim-header">
+        <div class="sim-title">Live Message Stream Simulator</div>
+        <div class="btn-group">
+          <button class="btn btn-primary" onclick="sendSimPacket()">Publish Packet</button>
+          <button class="btn" id="btn-auto-stream" onclick="toggleAutoStream()">Auto Stream</button>
+          <button class="btn" onclick="resetSim()">Reset</button>
+        </div>
+      </div>
+
+      <div class="sim-stage" id="stage-box">
+        <!-- PRODUCER NODE -->
+        <div style="position: absolute; left: 30px; top: 110px; background: #ffffff; border: 1.5px solid var(--accent); padding: 12px 18px; border-radius: 6px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+          <div style="font-size: 12px; font-weight: 700; color: var(--accent);">PRODUCER</div>
+          <div style="font-size: 10px; color: var(--text-muted); font-family: var(--font-mono);">Keyed Record</div>
+        </div>
+
+        <!-- ROUTER NODE -->
+        <div style="position: absolute; left: 240px; top: 120px; background: #f1f5f9; border: 1px solid var(--border-light); padding: 8px 14px; border-radius: 20px; font-size: 11px; font-family: var(--font-mono); color: var(--text-muted);">
+          MurmurHash2(Key) % 3
+        </div>
+
+        <!-- PARTITION QUEUES STACK -->
+        <div style="position: absolute; right: 30px; top: 20px; bottom: 20px; width: 340px; display: flex; flex-direction: column; gap: 14px; justify-content: center;">
+          <div style="background: #ffffff; border: 1px solid var(--border-color); border-radius: 6px; padding: 10px 14px; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+            <span style="font-size: 11px; font-weight: 700; color: var(--text-heading); font-family: var(--font-mono);">Partition 0</span>
+            <div id="q0-box" style="display: flex; gap: 6px;"></div>
+          </div>
+
+          <div style="background: #ffffff; border: 1px solid var(--border-color); border-radius: 6px; padding: 10px 14px; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+            <span style="font-size: 11px; font-weight: 700; color: var(--text-heading); font-family: var(--font-mono);">Partition 1</span>
+            <div id="q1-box" style="display: flex; gap: 6px;"></div>
+          </div>
+
+          <div style="background: #ffffff; border: 1px solid var(--border-color); border-radius: 6px; padding: 10px 14px; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+            <span style="font-size: 11px; font-weight: 700; color: var(--text-heading); font-family: var(--font-mono);">Partition 2</span>
+            <div id="q2-box" style="display: flex; gap: 6px;"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="terminal-console" id="console-stream">
+        [System Status] Ready to simulate message streaming...
+      </div>
+    </div>
+
+    <!-- SECTION 1 -->
+    <section id="section-1">
+      <h2>1. Topic, Partition & Offset Model</h2>
+      <p>
+        In Kafka architecture, data is organized in a hierarchy ranging from logical stream names down to physical log files stored on disk across cluster brokers.
+      </p>
+
+      <h3>Understanding Topics and Partitions</h3>
+      <p>
+        A <strong>Topic</strong> represents a logical stream category (such as <code>order-events</code> or <code>user-logs</code>). A Topic does not exist as a single file on disk. Instead, each Topic is divided into multiple <strong>Partitions</strong>.
+      </p>
+      <p>
+        A Partition is the actual physical unit of storage on disk. Each Partition corresponds to a physical directory on a broker's file system (for example: <code>/tmp/kafka-logs/order-events-0/</code>). Dividing a topic into partitions provides two major technical benefits:
+      </p>
+      <ul>
+        <li><strong>Scalability:</strong> It allows data for a single topic to spread across multiple hard drives and servers in a cluster, rather than being capped by a single machine's storage capacity.</li>
+        <li><strong>Parallelism:</strong> It allows multiple consumers in the same Consumer Group to read data from different partitions concurrently without locking or resource conflicts.</li>
+      </ul>
+
+      <h3>Ordering Guarantees</h3>
+      <p>
+        Kafka provides a conditional ordering guarantee: strict message ordering is guaranteed <strong>ONLY within the same Partition</strong>. Kafka does NOT guarantee message order across different partitions of the same topic.
+      </p>
+      <p>
+        To preserve order for related events (such as all transactions belonging to the same user ID), producers hash the message key:
+      </p>
+      <pre><code>PartitionID = MurmurHash2(Key) % TotalPartitions</code></pre>
+      <p>
+        Messages sharing the same key are routed to the exact same partition and appended sequentially in strict chronological order.
+      </p>
+
+      <h3>Understanding Offsets</h3>
+      <p>
+        An Offset is a 64-bit monotonically increasing integer assigned to each record as it is appended to a partition. Offsets are immutable. Once a record is written to a specific offset, that position is never modified or overwritten.
+      </p>
+    </section>
+
+    <!-- SECTION 2 -->
+    <section id="section-2">
+      <h2>2. Storage Engine & Segment Index (.log / .index)</h2>
+      <p>
+        Kafka's storage engine relies on an append-only commit log architecture. Write speeds reaching hundreds of megabytes to gigabytes per second are achieved by optimizing disk I/O operations at the operating system level.
+      </p>
+
+      <h3>Disk I/O Optimization (Sequential Write)</h3>
+      <p>
+        Random write operations on hard drives require the read/write head to move across disk platters (Disk Seek), introducing severe latency. Kafka uses only <strong>Sequential Append-Only Writes</strong>. Sequential writes eliminate disk seek overhead, allowing hard drives to approach RAM-like throughput speeds.
+      </p>
+
+      <h3>Segment Files Structure</h3>
+      <p>
+        To prevent a log file from growing into hundreds of gigabytes—which makes file management and data cleanup difficult—Kafka splits a partition's log into smaller files called Segments (typically capped at 1GB or 7 days). Each segment file is named after its Base Offset (the offset of the first record in that segment).
+      </p>
+      <p>Each segment consists of three primary files:</p>
+      <ul>
+        <li><code>.log</code>: Contains the actual raw binary message payload.</li>
+        <li><code>.index</code>: A sparse index mapping record Offsets to physical Byte Positions inside the <code>.log</code> file.</li>
+        <li><code>.timeindex</code>: A sparse index mapping Timestamps to Offsets.</li>
+      </ul>
+
+      <h3>Sparse Indexing Mechanism</h3>
+      <p>
+        Unlike traditional databases that index every single row, Kafka uses sparse indexing: an index entry is written to the <code>.index</code> file only after every 4KB of data written to the <code>.log</code> file.
+      </p>
+
+      <pre><code>Lookup workflow for a record at Offset = 105:
+1. Binary search on segment file names -> Identify target file 00000000000000000000.log
+2. Binary search on 00000000000000000000.index -> Find entry [Offset 100 -> Byte Position 4096]
+3. Seek to Byte 4096 in .log file -> Linearly scan a few records -> Stop at Offset 105.</code></pre>
+    </section>
+
+    <!-- SECTION 3 -->
+    <section id="section-3">
+      <h2>3. Producer Architecture, Routing & Acks Guarantees</h2>
+      <p>
+        Producers are responsible for routing, batching, and transmitting record batches to the correct partition on cluster brokers.
+      </p>
+
+      <h3>Routing Strategies</h3>
+      <ul>
+        <li><strong>Explicit Partition:</strong> Direct routing to a partition ID explicitly specified in code.</li>
+        <li><strong>Key Hashing:</strong> Uses <code>MurmurHash2(Key) % NumPartitions</code> when a record contains a key.</li>
+        <li><strong>Sticky Partitioner:</strong> When key is null, the producer sticks to a single partition until its batch is full before moving to the next partition, significantly reducing network fragmentation.</li>
+      </ul>
+
+      <h3>Batching & Compression</h3>
+      <p>
+        Producers group records into a single <code>RecordBatch</code> based on <code>batch.size</code> (default 16KB) and <code>linger.ms</code>. The entire batch payload is compressed (Snappy, LZ4, Gzip, or Zstd) at the producer before transmission over TCP.
+      </p>
+
+      <h3>Data Reliability (Acks Settings)</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Acks Setting</th>
+            <th>Confirmation Mechanism</th>
+            <th>Trade-off Profile</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>acks = 0</code></td>
+            <td>Producer fires data over socket and does not wait for broker response.</td>
+            <td>Lowest latency, highest data loss risk if broker crashes.</td>
+          </tr>
+          <tr>
+            <td><code>acks = 1</code></td>
+            <td>Waits for only the Partition Leader to write to local disk.</td>
+            <td>Balanced performance. Data loss possible if Leader crashes before replication.</td>
+          </tr>
+          <tr>
+            <td><code>acks = all</code></td>
+            <td>Waits for Leader and all ISR replicas to flush record to disk.</td>
+            <td>Zero data loss guarantee (No Data Loss). Higher latency.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- SECTION 4 -->
+    <section id="section-4">
+      <h2>4. Consumer Group, Rebalance Protocol & Offset Management</h2>
+      <p>
+        Consumer Groups enable parallel consumption scale-out and automatic failover handling.
+      </p>
+
+      <h3>Partition Assignment Golden Rule</h3>
+      <p>
+        Each Partition in a topic is assigned to <strong>AT MOST ONE Consumer</strong> within the same Consumer Group at any given time. If the number of consumers exceeds the number of topic partitions, extra consumers remain idle on standby.
+      </p>
+
+      <h3>Rebalance Protocol & Heartbeats</h3>
+      <p>
+        Rebalancing is triggered when members join/leave the group or topic partitions change. One broker acts as the Group Coordinator to manage group state transitions.
+      </p>
+      <p>
+        Consumers continuously send <code>Heartbeat</code> signals to the Group Coordinator. If no heartbeat is received within <code>session.timeout.ms</code>, the coordinator considers that consumer dead and initiates a rebalance.
+      </p>
+
+      <h3>Offset Commit Storage</h3>
+      <p>
+        Consumer progress is recorded by committing offsets. Kafka stores offset commits inside an internal system topic named <code>__consumer_offsets</code>.
+      </p>
+      <ul>
+        <li><strong>At-Most-Once:</strong> Offset is committed before message processing. Messages can be lost if worker crashes mid-processing.</li>
+        <li><strong>At-Least-Once:</strong> Offset is committed after message processing. Messages can be reprocessed if worker crashes before committing. Requires idempotent consumer logic.</li>
+      </ul>
+    </section>
+
+    <!-- SECTION 5 -->
+    <section id="section-5">
+      <h2>5. Replication Engine, ISR & High Watermark</h2>
+      <p>
+        Kafka's replication engine provides high availability even under physical server hardware failures.
+      </p>
+
+      <h3>Leader and Follower Replicas</h3>
+      <p>
+        Each partition has a Replication Factor. One replica is elected as Leader to handle all read and write traffic. Remaining replicas act as Followers, continuously sending <code>FetchRequest</code> calls to pull new data from the Leader to local disk.
+      </p>
+
+      <h3>High Watermark (HW) Mechanism</h3>
+      <p>
+        To maintain strict data consistency across nodes, Kafka tracks these offset metrics:
+      </p>
+      <ul>
+        <li><strong>LEO (Log End Offset):</strong> The offset of the next record to be written to a specific replica's log.</li>
+        <li><strong>ISR (In-Sync Replicas):</strong> The subset of replicas actively keeping up with the Leader.</li>
+        <li><strong>High Watermark (HW):</strong> The minimum LEO across all replicas in the ISR: <code>HW = min(LEO_ISR)</code>.</li>
+      </ul>
+
+      <blockquote>
+        <strong>Read Safety Constraint:</strong> Consumers are strictly allowed to read messages only up to <code>Offset &lt; High Watermark</code>. Messages beyond the HW are uncommitted and unsafe because they have not been fully replicated to all ISR members.
+      </blockquote>
+    </section>
+
+    <!-- SECTION 6 -->
+    <section id="section-6">
+      <h2>6. KRaft Metadata Consensus Protocol</h2>
+      <p>
+        Starting in version 3.x, Kafka replaced ZooKeeper with KRaft (Kafka Raft Metadata Mode), an in-house consensus protocol.
+      </p>
+
+      <h3>Limitations of ZooKeeper Architecture</h3>
+      <p>
+        Under ZooKeeper, cluster metadata was duplicated between ZooKeeper and the Kafka Controller, causing state desynchronization under high load. When a controller crashed, the new controller had to reload all metadata from ZooKeeper, pushing failover times up to 30 minutes on large clusters with hundreds of thousands of partitions.
+      </p>
+
+      <h3>KRaft Architecture</h3>
+      <p>
+        KRaft integrates Raft consensus directly into Kafka brokers. A quorum of Controller nodes elects an Active Controller. All cluster state changes are appended as event records to an internal single-partition topic named <code>@metadata</code>. Controller failover time drops to under one second.
+      </p>
+    </section>
+
+    <!-- SECTION 7 -->
+    <section id="section-7">
+      <h2>7. Retention Policies vs Log Compaction</h2>
+      <p>
+        Kafka provides two independent cleanup policies to manage long-term disk storage usage.
+      </p>
+
+      <h3>Log Retention Policy</h3>
+      <p>
+        Deletes old segment files based on time (<code>log.retention.hours</code>) or total partition size (<code>log.retention.bytes</code>). Data deletion always operates on entire segment files rather than deleting individual records inside a log.
+      </p>
+
+      <h3>Log Compaction Policy</h3>
+      <p>
+        Designed for state store or Change Data Capture (CDC) workloads. Kafka background threads clean old segments by retaining only the latest record (highest offset) for each Key. To signal a complete key deletion, a producer sends a record with <code>Value = null</code> (known as a Tombstone Record).
+      </p>
+    </section>
+
+    <!-- SECTION 8 -->
+    <section id="section-8">
+      <h2>8. Kafka Wire Protocol & Binary Framing</h2>
+      <p>
+        Kafka's network communication protocol uses custom binary frames encoded in Big-Endian network byte order over persistent TCP connections.
+      </p>
+
+      <h3>Request Header Frame Layout</h3>
+      <pre><code>+---------------------------------------------------------------+
+|                      MessageSize (INT32)                      |
++-------------------------------+-------------------------------+
+|        ApiKey (INT16)         |       ApiVersion (INT16)      |
++-------------------------------+-------------------------------+
+|                     CorrelationId (INT32)                     |
++---------------------------------------------------------------+
+|          ClientId (Length: INT16 + Raw UTF-8 Bytes)           |
++---------------------------------------------------------------+
+|                       Request Body ...                        |
++---------------------------------------------------------------+</code></pre>
+
+      <p>
+        The <code>CorrelationId</code> field enables asynchronous multiplexing: client applications can send multiple requests concurrently over a single TCP connection without suffering from Head-of-Line blocking.
+      </p>
+    </section>
+
+  </main>
+
+  <script>
+    // SIMULATOR SCRIPT (CLEAN TECH INTERACTIVE STREAMING)
+    let pktId = 0;
+    let autoTimer = null;
+
+    function sendSimPacket() {
+      pktId++;
+      const stage = document.getElementById('stage-box');
+      const consoleBox = document.getElementById('console-stream');
+
+      const pkt = document.createElement('div');
+      pkt.className = 'sim-packet';
+      pkt.innerText = pktId;
+      pkt.style.left = '80px';
+      pkt.style.top = '120px';
+      stage.appendChild(pkt);
+
+      const targetP = Math.floor(Math.random() * 3);
+      const targetY = 35 + (targetP * 72);
+
+      setTimeout(() => {
+        pkt.style.left = '260px';
+        pkt.style.top = `${targetY}px`;
+      }, 50);
+
+      setTimeout(() => {
+        pkt.style.left = '520px';
+      }, 700);
+
+      setTimeout(() => {
+        if (stage.contains(pkt)) stage.removeChild(pkt);
+        const qBox = document.getElementById(`q${targetP}-box`);
+        
+        const elem = document.createElement('div');
+        elem.style.cssText = 'width: 22px; height: 22px; border-radius: 4px; background: var(--accent); color: #fff; font-size: 10px; font-weight: 700; font-family: var(--font-mono); display: flex; align-items: center; justify-content: center;';
+        elem.innerText = pktId;
+
+        if (qBox.children.length > 5) qBox.removeChild(qBox.firstChild);
+        qBox.appendChild(elem);
+
+        const timestamp = new Date().toISOString().split('T')[1].slice(0, 8);
+        const logLine = `[${timestamp}] Producer -> KeyHash -> Partition ${targetP} (Offset ${qBox.children.length - 1})`;
+        consoleBox.innerHTML = `<div>${logLine}</div>` + consoleBox.innerHTML;
+      }, 1400);
+    }
+
+    function toggleAutoStream() {
+      const btn = document.getElementById('btn-auto-stream');
+      if (autoTimer) {
+        clearInterval(autoTimer);
+        autoTimer = null;
+        btn.innerText = 'Auto Stream';
+        btn.classList.remove('btn-primary');
+      } else {
+        autoTimer = setInterval(sendSimPacket, 1600);
+        btn.innerText = 'Stop Stream';
+        btn.classList.add('btn-primary');
+      }
+    }
+
+    function resetSim() {
+      if (autoTimer) toggleAutoStream();
+      pktId = 0;
+      document.getElementById('q0-box').innerHTML = '';
+      document.getElementById('q1-box').innerHTML = '';
+      document.getElementById('q2-box').innerHTML = '';
+      document.getElementById('console-stream').innerHTML = '[System Status] Ready to simulate message streaming...';
+    }
+  </script>
+</body>
+</html>

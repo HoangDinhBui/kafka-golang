@@ -1,0 +1,57 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go build outputs / binaries
+/bin/
+/dist/
+/build/
+
+# Architecture output
+*.cgo1.go
+*.cgo2.c
+_cgo_defun.c
+_cgo_gotypes.go
+_cgo_export.c
+_cgo_export.h
+_obj
+_test
+
+# Dependency directories
+# vendor/
+
+# Environment configuration
+.env
+*.env
+!.env.example
+
+# IDE & Editor configs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.vs/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Log files & local data
+*.log
+*.sqlite
+*.db
+
+
+# .md file
+Roadmap.md
