@@ -1,0 +1,38 @@
+name: Go CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+      - 'feat/**'
+      - 'fix/**'
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  lint-and-test:
+    name: Build & Test Engine
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go Environment
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.x'
+          cache: true
+
+      - name: Verify Go Dependencies
+        run: go mod verify
+
+      - name: Run Go Vet (Static Analysis)
+        run: go vet ./...
+
+      - name: Build All Binaries & Packages
+        run: go build -v ./...
+
+      - name: Run Unit Tests with Race Detector & Coverage
+        run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
