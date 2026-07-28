@@ -1,137 +1,91 @@
-# kafka-golang 🚀
+# kafka-golang
 
-A high-performance, distributed event streaming message broker written in Go, compatible with the Apache Kafka Wire Protocol.
+> An Apache Kafka-compatible message broker and binary wire protocol engine written in Go.
 
-[![Go Version](https://img.shields.io/github/go-mod/go-version/HoangDinhBui/kafka-golang)](https://golang.org)
-[![Build Status](https://img.shields.io/github/actions/workflow/status/HoangDinhBui/kafka-golang/go-ci.yml?branch=main)](https://github.com/HoangDinhBui/kafka-golang/actions)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+## Features
 
-`kafka-golang` is built from scratch in pure Go without third-party external runtime dependencies. It reproduces Apache Kafka's core storage engine and networking protocol, including sequential append-only commit logs, 4KB sparse indexing, binary wire protocol framing over TCP, and multi-partition routing.
+- **Sequential Commit Log**: High-throughput append-only disk storage (`.log`).
+- **4KB Sparse Indexing**: Fast $O(\log N)$ binary search on disk (`.index`).
+- **Kafka Protocol Compatibility**: Supports 9 core Kafka binary APIs over raw TCP.
+- **Consumer Group Coordinator**: Manages offset persistence, group membership, and rebalancing.
+- **Multi-Broker Replication**: High Watermark (HW) tracking and follower replication loops.
+- **KRaft Consensus Engine**: Built-in Raft metadata controller state machine without ZooKeeper.
+- **Zero Dependencies**: Built entirely with Go standard library.
 
----
-
-## 🌟 Key Architecture Highlights
-
-- **⚡ Sequential Append-Only Commit Log**: High-throughput disk writes that eliminate random disk seek overhead, reaching GB/s speed.
-- **🔍 4KB Sparse Indexing (`.index`)**: Memory-efficient binary index mapping record offsets to physical byte positions for $O(\log N)$ binary search.
-- **🔌 Kafka Wire Protocol Compatible**: Implements custom Big-Endian TCP binary framing compatible with official Kafka CLI tools (`kafka-console-producer`, `kafka-console-consumer`) and client SDKs (Sarama, `kafka-go`).
-- **🚀 Concurrent TCP Server & Handler**: Non-blocking connection management handling concurrent client requests via Go goroutines and worker pools.
-- **🛡️ Data Integrity & Record Batching**: Supports Kafka `RecordBatch` binary layout with CRC validation and variable-length integer encoding.
-- **👥 Consumer Group & Offset Management (In Progress)**: Persistent offset storage (`__consumer_offsets`) and Group Coordinator state machine.
-
----
-
-## 📁 Repository Directory Structure
-
-```
-kafka-golang/
-├── .github/
-│   └── workflows/
-│       └── go-ci.yml             # Automated CI pipeline (Build, Test, Lint)
-├── cmd/
-│   └── broker/
-│       └── main.go               # Broker entrypoint & TCP Server bootstrap
-├── internal/
-│   ├── config/                   # Server configuration & environment parser
-│   ├── storage/                  # Storage Engine (.log, .index, RecordBatch, Segment)
-│   │   ├── index.go              # 4KB Sparse Index implementation
-│   │   ├── partition_log.go      # Partition Commit Log append & fetch manager
-│   │   ├── record.go             # Binary RecordBatch encoder & decoder
-│   │   └── segment.go            # Log Segment file manager
-│   ├── protocol/                 # Kafka Wire Protocol Encoders & Decoders
-│   │   ├── api_version.go        # ApiVersions API (ApiKey 18)
-│   │   ├── fetch.go              # Fetch API (ApiKey 1)
-│   │   ├── header.go             # Request/Response Header framing
-│   │   ├── metadata.go           # Metadata API (ApiKey 3)
-│   │   └── produce.go            # Produce API (ApiKey 0)
-│   ├── server/                   # Networking & Connection Handlers
-│   │   ├── connection.go         # Concurrent client TCP connection handler
-│   │   ├── handler.go            # Request router & storage dispatcher
-│   │   └── tcp_server.go         # TCP Listener socket manager
-│   ├── coordinator/              # Group Coordinator & Offset Persistence (Phase 5)
-│   ├── replication/              # Partition Replication & ISR Fetcher (Phase 6)
-│   └── consensus/                # KRaft Raft Quorum Metadata Engine (Phase 7)
-├── docs/                         # Interactive Visual Architecture & Engineering Guide
-├── go.mod                        # Go module file
-└── README.md                     # Project documentation
-```
-
----
-
-## 🛠️ Supported Kafka Wire Protocol APIs
-
-| API Name | ApiKey | Supported Versions | Description |
-| :--- | :--- | :--- | :--- |
-| **Produce** | `0` | `v0` – `v8` | Appends record batches to partition commit logs |
-| **Fetch** | `1` | `v0` – `v11` | Reads record batches from partition logs starting at offset |
-| **Metadata** | `3` | `v0` – `v9` | Returns cluster brokers, topics, and partition leader assignments |
-| **ApiVersions** | `18` | `v0` – `v3` | Returns supported API versions and capabilities to clients |
-| **OffsetCommit** | `8` | *In Progress* | Commits consumer group partition offsets |
-| **OffsetFetch** | `9` | *In Progress* | Fetches committed offsets for a consumer group |
-| **JoinGroup** | `11` | *In Progress* | Registers consumer members into a consumer group |
-| **Heartbeat** | `12` | *In Progress* | Consumer member liveness heartbeat check |
-| **SyncGroup** | `14` | *In Progress* | Synchronizes partition assignments across group members |
-
----
-
-## 🚀 Quick Start
+## Install
 
 ### Prerequisites
-- **Go**: Version `1.22` or higher installed.
 
-### 1. Build and Run the Broker
+- Go `1.22` or higher.
+
+### Build Binary
 
 ```bash
-# Clone the repository
-git clone https://github.com/HoangDinhBui/kafka-golang.git
-cd kafka-golang
-
-# Build the broker binary
 go build -o bin/broker cmd/broker/main.go
+```
 
-# Start the broker (default port 9092)
+## Usage
+
+Start the broker with default options (port `9092`, data directory `./data`, node ID `1`):
+
+```bash
 ./bin/broker
 ```
 
-### 2. Test with Official Apache Kafka CLI Tools
+Or specify custom flags:
 
 ```bash
-# Produce messages to topic "order-events"
-kafka-console-producer --bootstrap-server localhost:9092 --topic order-events
-
-# In another terminal, consume messages from the beginning
-kafka-console-consumer --bootstrap-server localhost:9092 --topic order-events --from-beginning
+./bin/broker -port 9095 -data-dir ./my-data -node-id 2 -host 127.0.0.1
 ```
 
----
+### CLI Flags
 
-## 🧪 Running Tests & Benchmarks
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `-port` | `9092` | TCP listener port for the broker |
+| `-data-dir` | `./data` | Directory path for storing partition log segments and indices |
+| `-node-id` | `1` | Unique integer ID identifying this broker node |
+| `-host` | `127.0.0.1` | Hostname or IP address advertised by the broker |
 
-The codebase includes unit tests for storage segments, sparse index binary search, wire protocol serialization, and end-to-end TCP server integration.
+### Testing
+
+Run all unit and integration tests with the Go race detector:
 
 ```bash
-# Run all unit and integration tests with race detector
 go test -v -race ./...
-
-# Run storage engine benchmarks
-go test -bench=. ./internal/storage/...
 ```
 
----
+## Architecture
 
-## 🗺️ Project Roadmap & Development Phases
+```text
+kafka-golang/
+├── cmd/broker/main.go           # CLI flags, OS signal handling (SIGINT/SIGTERM), server startup
+├── internal/
+│   ├── config/                  # Default broker configuration
+│   ├── storage/                 # Storage engine (.log, .index, Record, Segment, PartitionLog)
+│   ├── protocol/                # Binary wire protocol encoders and decoders for 9 Kafka APIs
+│   ├── server/                  # TCP server, framing decoder, request router
+│   ├── coordinator/             # Consumer group coordinator and offset manager
+│   ├── replication/             # Replica manager, LEO/HW tracking, follower fetcher loop
+│   └── consensus/               # KRaft (Raft) consensus node state machine
+└── docs/
+    └── architecture-faq.md      # Detailed architecture Q&A guide
+```
 
-- [x] **Phase 0**: Architecture Specifications & Interactive Documentation
-- [x] **Phase 1**: TCP Server Bootstrap & Binary Frame Unpacking
-- [x] **Phase 2**: Append-Only Commit Log & 4KB Sparse Indexing
-- [x] **Phase 3**: Produce (ApiKey 0) & Fetch (ApiKey 1) Protocol Handlers
-- [x] **Phase 4**: End-to-End Client SDK Integration & Integration Testing
-- [x] **Phase 5**: Consumer Group Coordinator & Offset Persistence (`__consumer_offsets`)
-- [ ] **Phase 6**: Partition Replication, ISR & Leader/Follower Fetcher
-- [ ] **Phase 7**: KRaft Metadata Consensus Engine (`@metadata`)
+## Supported Kafka Protocol APIs
 
----
+| API Name | ApiKey | Implementation |
+| :--- | :--- | :--- |
+| **Produce** | `0` | `internal/protocol/produce.go` |
+| **Fetch** | `1` | `internal/protocol/fetch.go` |
+| **Metadata** | `3` | `internal/protocol/metadata.go` |
+| **OffsetCommit** | `8` | `internal/protocol/offset.go` |
+| **OffsetFetch** | `9` | `internal/protocol/offset.go` |
+| **JoinGroup** | `11` | `internal/protocol/group.go` |
+| **Heartbeat** | `12` | `internal/protocol/group.go` |
+| **SyncGroup** | `14` | `internal/protocol/group.go` |
+| **ApiVersions** | `18` | `internal/protocol/api_version.go` |
 
-## 📄 License
+## License
 
-This project is open-source software licensed under the **[MIT License](LICENSE)**.
+MIT
