@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // ============================================================================
@@ -189,3 +190,38 @@ func (s *Segment) recoverState() error {
 
 	return nil
 }
+
+// ============================================================================
+// PUBLIC GETTERS & HELPERS FOR SEGMENT CLEANING
+// ============================================================================
+func (s *Segment) BaseOffset() uint64 {
+	return s.baseOffset
+}
+
+func (s *Segment) NextOffset() uint64 {
+	return s.nextOffset
+}
+
+func (s *Segment) Size() int64 {
+	return s.currentSize
+}
+
+func (s *Segment) LogFilePath() string {
+	if s.logFile != nil {
+		return s.logFile.Name()
+	}
+	return ""
+}
+
+func (s *Segment) RemoveFiles() error {
+	_ = s.Close()
+
+	if s.logFile != nil {
+		logPath := s.logFile.Name()
+		indexPath := strings.TrimSuffix(logPath, ".log") + ".index"
+		_ = os.Remove(logPath)
+		_ = os.Remove(indexPath)
+	}
+	return nil
+}
+
