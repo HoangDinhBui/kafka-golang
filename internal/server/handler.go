@@ -94,6 +94,54 @@ func (h *Handler) GetGroupCoordinator() *coordinator.GroupCoordinator {
 }
 
 // ============================================================================
+// PUBLIC METHOD: GetPartitions
+// Description: Returns a thread-safe shallow copy map of active PartitionLog pointers.
+// ============================================================================
+func (h *Handler) GetPartitions() map[string]*storage.PartitionLog {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	result := make(map[string]*storage.PartitionLog, len(h.partitions))
+	for k, v := range h.partitions {
+		result[k] = v
+	}
+	return result
+}
+
+// ============================================================================
+// PUBLIC METHOD: GetNodeID
+// Description: Returns broker Node ID.
+// ============================================================================
+func (h *Handler) GetNodeID() int32 {
+	return h.nodeId
+}
+
+// ============================================================================
+// PUBLIC METHOD: GetHost
+// Description: Returns broker host address.
+// ============================================================================
+func (h *Handler) GetHost() string {
+	return h.host
+}
+
+// ============================================================================
+// PUBLIC METHOD: GetPort
+// Description: Returns broker TCP port.
+// ============================================================================
+func (h *Handler) GetPort() int32 {
+	return h.port
+}
+
+// ============================================================================
+// PUBLIC METHOD: GetDataDir
+// Description: Returns base log storage directory.
+// ============================================================================
+func (h *Handler) GetDataDir() string {
+	return h.dataDir
+}
+
+
+// ============================================================================
 // PRIVATE METHOD: handleApiVersions
 // Description: Handles ApiVersions (ApiKey 18) requests.
 // ============================================================================
