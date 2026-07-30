@@ -236,3 +236,49 @@ func (p *PartitionLog) Stats() (int, int64) {
 	return len(p.segments), totalSize
 }
 
+// ============================================================================
+// PUBLIC METHOD: GetNonActiveSegments
+// Description: Thread-safely returns all closed (non-active) segment pointers.
+// ============================================================================
+func (p *PartitionLog) GetNonActiveSegments() []*Segment {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	if len(p.segments) <= 1 {
+		return nil
+	}
+	result := make([]*Segment, len(p.segments)-1)
+	copy(result, p.segments[:len(p.segments)-1])
+	return result
+}
+
+// ============================================================================
+// PUBLIC METHOD: RemoveOldestSegment
+// Description: Thread-safely removes and deletes the oldest non-active segment.
+// ============================================================================
+func (p *PartitionLog) RemoveOldestSegment() (bool, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if len(p.segments) <= 1 {
+		return false, nil
+	}
+
+	oldestSeg := p.segments[0]
+	p.segments = p.segments[1:]
+
+	err := oldestSeg.RemoveFiles()
+	return true, err
+}
+
+// ============================================================================
+// PUBLIC METHOD: Dir
+// Description: Thread-safely returns directory path of the partition log.
+// ============================================================================
+func (p *PartitionLog) Dir() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.dir
+}
+
+
