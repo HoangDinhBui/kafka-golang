@@ -126,6 +126,45 @@ func DecodeProduceRequest(r io.Reader) (*ProduceRequest, error) {
 }
 
 // ============================================================================
+// FUNCTION: EncodeProduceRequest
+// Description: Encodes a ProduceRequest into binary format to an io.Writer stream.
+// ============================================================================
+func EncodeProduceRequest(w io.Writer, req *ProduceRequest) error {
+	if err := WriteInt16(w, req.Acks); err != nil {
+		return err
+	}
+	if err := WriteInt32(w, req.Timeout); err != nil {
+		return err
+	}
+	if err := WriteInt32(w, int32(len(req.Topics))); err != nil {
+		return err
+	}
+	for _, t := range req.Topics {
+		if err := WriteString(w, t.TopicName); err != nil {
+			return err
+		}
+		if err := WriteInt32(w, int32(len(t.Partitions))); err != nil {
+			return err
+		}
+		for _, p := range t.Partitions {
+			if err := WriteInt32(w, p.PartitionId); err != nil {
+				return err
+			}
+			if err := WriteInt32(w, int32(len(p.RecordsData))); err != nil {
+				return err
+			}
+			if len(p.RecordsData) > 0 {
+				if _, err := w.Write(p.RecordsData); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+
+// ============================================================================
 // FUNCTION: EncodeProduceResponse
 // Description: Encodes a ProduceResponse into binary format to an io.Writer.
 // ============================================================================
