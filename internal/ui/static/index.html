@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Kafka Engineering — Management UI & Dashboard</title>
+  <!-- Fonts: Inter & JetBrains Mono for authentic engineering docs style -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <!-- LEFT SIDEBAR NAVIGATION -->
+  <aside>
+    <div>
+      <div class="brand-header">
+        <div class="brand-title">
+          Kafka Broker <span class="badge-tag">v1.0</span>
+        </div>
+        <div class="brand-subtitle">Cluster Management & Telemetry Engine</div>
+      </div>
+
+      <div class="nav-section-title">Telemetry & Control</div>
+      <ul class="nav-list">
+        <li class="nav-item">
+          <button class="nav-link active" data-tab="overviewTab">
+            <span>Cluster Overview</span>
+          </button>
+        </li>
+        <li class="nav-item">
+          <button class="nav-link" data-tab="topicsTab">
+            <span>Topics & Partitions</span>
+          </button>
+        </li>
+        <li class="nav-item">
+          <button class="nav-link" data-tab="messagesTab">
+            <span>Live Message Stream</span>
+          </button>
+        </li>
+        <li class="nav-item">
+          <button class="nav-link" data-tab="groupsTab">
+            <span>Consumer Groups & Lag</span>
+          </button>
+        </li>
+        <li class="nav-item">
+          <button class="nav-link" data-tab="logsTab">
+            <span>Broker Logs</span>
+          </button>
+        </li>
+      </ul>
+    </div>
+
+    <div class="sidebar-footer">
+      <div class="node-status-card">
+        <div class="status-indicator">
+          <span class="status-dot"></span>
+          <span id="nodeStatusText">BROKER ONLINE</span>
+        </div>
+        <div class="mono" id="sidebarNodePill" style="color:var(--text-muted);">Node 1 | 127.0.0.1:9092</div>
+        <div class="mono" id="sidebarUptimePill" style="color:var(--text-muted); font-size:11px; margin-top:2px;">Uptime: 0s</div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- MAIN CONTENT AREA -->
+  <main>
+    <!-- PAGE HEADER -->
+    <header class="page-header">
+      <div>
+        <div class="page-meta">REAL-TIME CLUSTER CONTROL CENTER</div>
+        <h1 id="pageTitleHeading">Cluster Overview</h1>
+      </div>
+
+      <div class="header-controls">
+        <button class="btn" id="themeToggleBtn" title="Toggle Light/Dark Theme">
+          <span id="themeBtnText">Theme: Dark</span>
+        </button>
+        <button class="btn btn-primary" id="globalRefreshBtn">↻ Refresh Data</button>
+      </div>
+    </header>
+
+    <!-- METRICS SUMMARY CARDS ROW -->
+    <section class="metrics-row">
+      <div class="metric-card">
+        <div class="metric-label">TOTAL TOPICS</div>
+        <div class="metric-val" id="statTotalTopics">0</div>
+        <div class="metric-subtext" id="statPartitionsCount">0 partitions total</div>
+      </div>
+
+      <div class="metric-card">
+        <div class="metric-label">TOTAL MESSAGES</div>
+        <div class="metric-val" id="statTotalMessages">0</div>
+        <div class="metric-subtext" id="statMsgRate">0.0 msg/sec</div>
+      </div>
+
+      <div class="metric-card">
+        <div class="metric-label">STORAGE DISK SIZE</div>
+        <div class="metric-val" id="statStorageSize">0 B</div>
+        <div class="metric-subtext" id="statDataDir">./data</div>
+      </div>
+
+      <div class="metric-card">
+        <div class="metric-label">THROUGHPUT (IN / OUT)</div>
+        <div class="metric-val" id="statThroughput">0 KB/s</div>
+        <div class="metric-subtext" id="statThroughputSub">In: 0 B/s | Out: 0 B/s</div>
+      </div>
+
+      <div class="metric-card">
+        <div class="metric-label">MEMORY ALLOC</div>
+        <div class="metric-val" id="statMemory">0 MB</div>
+        <div class="metric-subtext" id="statGoroutines">Goroutines: 0 | WS: 0</div>
+      </div>
+    </section>
+
+    <!-- TAB PANELS -->
+
+    <!-- TAB 1: OVERVIEW -->
+    <div class="tab-panel active" id="overviewTab">
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+        <div class="section-card">
+          <div class="card-header">
+            <h3>Broker Node Configuration & Health</h3>
+          </div>
+          <div class="card-body">
+            <table>
+              <tbody>
+                <tr><td style="color:var(--text-muted);">Broker Node ID</td><td id="ovNodeId" class="mono font-weight-bold">1</td></tr>
+                <tr><td style="color:var(--text-muted);">Client TCP Address</td><td id="ovAddress" class="mono">127.0.0.1:9092</td></tr>
+                <tr><td style="color:var(--text-muted);">Management UI Port</td><td id="ovUiPort" class="mono">8085</td></tr>
+                <tr><td style="color:var(--text-muted);">Storage Directory</td><td id="ovDataDir" class="mono">./data</td></tr>
+                <tr><td style="color:var(--text-muted);">Uptime Duration</td><td id="ovUptime" class="mono">0s</td></tr>
+                <tr><td style="color:var(--text-muted);">Active Goroutines</td><td id="ovGoroutines" class="mono">0</td></tr>
+                <tr><td style="color:var(--text-muted);">Heap Alloc / System Mem</td><td id="ovMemStats" class="mono">0 MB / 0 MB</td></tr>
+                <tr><td style="color:var(--text-muted);">Garbage Collections (GC)</td><td id="ovNumGC" class="mono">0</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="section-card">
+          <div class="card-header">
+            <h3>Real-Time Telemetry & Connections</h3>
+          </div>
+          <div class="card-body">
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; text-align: center;">
+              <div style="background:var(--bg-surface); border:1px solid var(--border-color); padding:14px; border-radius:var(--radius);">
+                <div style="font-size:11px; color:var(--text-muted); margin-bottom:4px;">MSG IN RATE</div>
+                <div id="ovMsgRate" class="mono" style="font-size:20px; font-weight:700; color:var(--accent);">0 /s</div>
+              </div>
+              <div style="background:var(--bg-surface); border:1px solid var(--border-color); padding:14px; border-radius:var(--radius);">
+                <div style="font-size:11px; color:var(--text-muted); margin-bottom:4px;">BYTES IN RATE</div>
+                <div id="ovBytesIn" class="mono" style="font-size:20px; font-weight:700; color:var(--accent);">0 B/s</div>
+              </div>
+              <div style="background:var(--bg-surface); border:1px solid var(--border-color); padding:14px; border-radius:var(--radius);">
+                <div style="font-size:11px; color:var(--text-muted); margin-bottom:4px;">BYTES OUT RATE</div>
+                <div id="ovBytesOut" class="mono" style="font-size:20px; font-weight:700; color:var(--accent);">0 B/s</div>
+              </div>
+              <div style="background:var(--bg-surface); border:1px solid var(--border-color); padding:14px; border-radius:var(--radius);">
+                <div style="font-size:11px; color:var(--text-muted); margin-bottom:4px;">WS SUBSCRIBERS</div>
+                <div id="ovWsClients" class="mono" style="font-size:20px; font-weight:700; color:var(--green);">0</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 2: TOPICS & PARTITIONS -->
+    <div class="tab-panel" id="topicsTab">
+      <div class="section-card">
+        <div class="card-header">
+          <h3>Topic Directory</h3>
+          <div style="display: flex; gap: 10px;">
+            <input type="text" id="topicSearchInput" class="form-control" placeholder="Search topic name..." style="width: 220px;">
+            <button class="btn" id="refreshTopicsBtn">↻ Refresh</button>
+          </div>
+        </div>
+        <div class="card-body no-padding">
+          <table>
+            <thead>
+              <tr>
+                <th>Topic Name</th>
+                <th>Partitions Count</th>
+                <th>Log End Offset (LEO)</th>
+                <th>Storage Disk Size</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="topicsTableBody">
+              <tr><td colspan="5" style="text-align:center; color:var(--text-muted);">Loading topics...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 3: LIVE MESSAGES -->
+    <div class="tab-panel" id="messagesTab">
+      <div class="section-card">
+        <div class="card-header">
+          <h3>Message Payload Inspector</h3>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
+            <select id="msgTopicSelect" class="form-control" style="min-width: 160px;">
+              <option value="">-- Select Topic --</option>
+            </select>
+            <select id="msgPartitionSelect" class="form-control" style="width: 120px;">
+              <option value="0">Partition 0</option>
+            </select>
+            <input type="number" id="msgOffsetInput" class="form-control" placeholder="Offset" value="0" min="0" style="width: 90px;">
+            <button class="btn btn-primary" id="fetchMessagesBtn">Fetch Records</button>
+          </div>
+        </div>
+        <div class="card-body no-padding" style="max-height: 480px; overflow-y: auto;">
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 90px;">Offset</th>
+                <th style="width: 170px;">Timestamp</th>
+                <th>Key</th>
+                <th>Value Payload</th>
+                <th style="width: 80px;">Size</th>
+              </tr>
+            </thead>
+            <tbody id="messagesTableBody">
+              <tr><td colspan="5" style="text-align:center; color:var(--text-muted);">Select a topic to view records.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 4: CONSUMER GROUPS -->
+    <div class="tab-panel" id="groupsTab">
+      <div class="section-card">
+        <div class="card-header">
+          <h3>Consumer Groups & Lag Monitor</h3>
+          <button class="btn" id="refreshGroupsBtn">↻ Refresh Groups</button>
+        </div>
+        <div class="card-body no-padding">
+          <div id="groupsContainer">
+            <div style="padding: 24px; text-align: center; color: var(--text-muted);">Loading consumer groups...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 5: LOG CONSOLE -->
+    <div class="tab-panel" id="logsTab">
+      <div class="section-card">
+        <div class="card-header">
+          <h3>Broker Operational Terminal Log</h3>
+          <button class="btn" id="clearLogsBtn">Clear Terminal</button>
+        </div>
+        <div class="card-body no-padding">
+          <div class="terminal-console" id="consoleTerminal">
+            <div class="console-line info">[System] Web Management Dashboard initialized. Connected to telemetry engine.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
