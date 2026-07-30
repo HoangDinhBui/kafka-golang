@@ -208,8 +208,9 @@
             <select id="msgPartitionSelect" class="form-control" style="width: 120px;">
               <option value="0">Partition 0</option>
             </select>
-            <input type="number" id="msgOffsetInput" class="form-control" placeholder="Offset" value="0" min="0" style="width: 90px;">
+            <input type="number" id="msgOffsetInput" class="form-control" placeholder="Offset" value="0" min="0" style="width: 100px;">
             <button class="btn btn-primary" id="fetchMessagesBtn">Fetch Records</button>
+            <button class="btn" id="latestOffsetBtn">Jump to Latest</button>
           </div>
         </div>
         <div class="card-body no-padding" style="max-height: 480px; overflow-y: auto;">
@@ -227,6 +228,23 @@
               <tr><td colspan="5" style="text-align:center; color:var(--text-muted);">Select a topic to view records.</td></tr>
             </tbody>
           </table>
+        </div>
+        <div style="padding: 12px 20px; border-top: 1px solid var(--border-color); background: var(--bg-surface); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+          <div style="font-size: 12px; color: var(--text-muted); font-family: var(--font-mono);" id="paginationInfoText">
+            Showing records offset 0 - 0 of 0
+          </div>
+          <div style="display: flex; gap: 6px; align-items: center;">
+            <select id="msgLimitSelect" class="form-control" style="width: 110px;">
+              <option value="50">50 / page</option>
+              <option value="100">100 / page</option>
+              <option value="200">200 / page</option>
+            </select>
+            <button class="btn" id="btnPageFirst" title="First Page">⏮ First</button>
+            <button class="btn" id="btnPagePrev" title="Previous Page">◀ Prev</button>
+            <span class="mono" id="currentPageDisplay" style="font-size: 12px; font-weight: 600; padding: 0 8px;">Page 1</span>
+            <button class="btn" id="btnPageNext" title="Next Page">Next ▶</button>
+            <button class="btn" id="btnPageLast" title="Last Page">Last ⏭</button>
+          </div>
         </div>
       </div>
     </div>

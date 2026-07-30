@@ -13,6 +13,11 @@ import (
 	"github.com/HoangDinhBui/kafka-golang/internal/storage"
 )
 
+type TelemetryListener interface {
+	RecordMsgIn(count uint64, bytes uint64)
+	RecordBytesOut(bytes uint64)
+}
+
 // ============================================================================
 // STRUCT: Handler
 // Description: Routes Kafka protocol requests and coordinates with storage,
@@ -27,6 +32,7 @@ type Handler struct {
 	partitions       map[string]*storage.PartitionLog // Active partition logs map (key: topic-partitionId)
 	offsetManager    *coordinator.OffsetManager       // Offset persistence manager
 	groupCoordinator *coordinator.GroupCoordinator    // Consumer group coordinator
+	telemetry        TelemetryListener                // Telemetry metric listener
 }
 
 // ============================================================================
@@ -47,6 +53,14 @@ func NewHandler(dataDir string, nodeId int32, host string, port int32) *Handler 
 		groupCoordinator: groupCoord,
 	}
 }
+
+// SetTelemetryListener registers a TelemetryListener implementation.
+func (h *Handler) SetTelemetryListener(l TelemetryListener) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.telemetry = l
+}
+
 
 // ============================================================================
 // FUNCTION: HandleRequest
@@ -238,6 +252,13 @@ func (h *Handler) handleProduce(bodyReader io.Reader, respWriter io.Writer) erro
 
 				if err := pl.Append(rec); err != nil {
 					break
+				}
+
+				h.mu.RLock()
+				tel := h.telemetry
+				h.mu.RUnlock()
+				if tel != nil {
+					tel.RecordMsgIn(1, uint64(len(rec.Value)))
 				}
 
 				if firstOffset == -1 {
