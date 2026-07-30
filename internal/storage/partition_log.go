@@ -192,3 +192,47 @@ func (p *PartitionLog) findSegmentIndex(startOffset uint64) int {
 
 	return result
 }
+
+// ============================================================================
+// PUBLIC METHOD: LEO
+// Description: Thread-safely returns the current Log End Offset (nextOffset).
+// ============================================================================
+func (p *PartitionLog) LEO() uint64 {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	if p.activeSegment == nil {
+		return 0
+	}
+	return p.activeSegment.nextOffset
+}
+
+// ============================================================================
+// PUBLIC METHOD: BaseOffset
+// Description: Thread-safely returns the base offset of the first segment.
+// ============================================================================
+func (p *PartitionLog) BaseOffset() uint64 {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	if len(p.segments) == 0 {
+		return 0
+	}
+	return p.segments[0].baseOffset
+}
+
+// ============================================================================
+// PUBLIC METHOD: Stats
+// Description: Thread-safely returns total segment count and total size in bytes.
+// ============================================================================
+func (p *PartitionLog) Stats() (int, int64) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	var totalSize int64
+	for _, seg := range p.segments {
+		totalSize += seg.currentSize
+	}
+	return len(p.segments), totalSize
+}
+

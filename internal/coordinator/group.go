@@ -278,3 +278,19 @@ func (gc *GroupCoordinator) CheckHeartbeatTimeouts() []string {
 func generateUUIDShort() string {
 	return fmt.Sprintf("%x", time.Now().UnixNano()%1000000)
 }
+
+// ============================================================================
+// PUBLIC METHOD: GetAllGroups
+// Description: Returns a slice of all registered ConsumerGroup pointers.
+// ============================================================================
+func (gc *GroupCoordinator) GetAllGroups() []*ConsumerGroup {
+	gc.mu.RLock()
+	defer gc.mu.RUnlock()
+
+	groups := make([]*ConsumerGroup, 0, len(gc.groups))
+	for _, group := range gc.groups {
+		groups = append(groups, group)
+	}
+	return groups
+}
+
