@@ -115,6 +115,70 @@
     document.getElementById('refreshTopicsBtn').addEventListener('click', fetchTopics);
     document.getElementById('refreshGroupsBtn').addEventListener('click', fetchGroups);
     fetchMessagesBtn.addEventListener('click', fetchMessages);
+
+    const latestBtn = document.getElementById('latestOffsetBtn');
+    if (latestBtn) {
+      latestBtn.addEventListener('click', () => {
+        const topic = state.topics.find(t => t.topic_name === state.selectedTopic);
+        if (topic && topic.partitions && topic.partitions.length > 0) {
+          const p = topic.partitions.find(part => part.partition_id === state.selectedPartition) || topic.partitions[0];
+          if (p && p.leo > 0) {
+            const limitSelect = document.getElementById('msgLimitSelect');
+            const limit = limitSelect ? parseInt(limitSelect.value, 10) : 50;
+            msgOffsetInput.value = Math.max(0, p.leo - limit);
+            fetchMessages();
+          }
+        }
+      });
+    }
+
+    const btnFirst = document.getElementById('btnPageFirst');
+    const btnPrev = document.getElementById('btnPagePrev');
+    const btnNext = document.getElementById('btnPageNext');
+    const btnLast = document.getElementById('btnPageLast');
+    const limitSelect = document.getElementById('msgLimitSelect');
+
+    if (limitSelect) limitSelect.addEventListener('change', fetchMessages);
+
+    if (btnFirst) {
+      btnFirst.addEventListener('click', () => {
+        msgOffsetInput.value = 0;
+        fetchMessages();
+      });
+    }
+
+    if (btnPrev) {
+      btnPrev.addEventListener('click', () => {
+        const limit = limitSelect ? parseInt(limitSelect.value, 10) : 50;
+        const curr = parseInt(msgOffsetInput.value, 10) || 0;
+        msgOffsetInput.value = Math.max(0, curr - limit);
+        fetchMessages();
+      });
+    }
+
+    if (btnNext) {
+      btnNext.addEventListener('click', () => {
+        const limit = limitSelect ? parseInt(limitSelect.value, 10) : 50;
+        const curr = parseInt(msgOffsetInput.value, 10) || 0;
+        msgOffsetInput.value = curr + limit;
+        fetchMessages();
+      });
+    }
+
+    if (btnLast) {
+      btnLast.addEventListener('click', () => {
+        const topic = state.topics.find(t => t.topic_name === state.selectedTopic);
+        if (topic && topic.partitions && topic.partitions.length > 0) {
+          const p = topic.partitions.find(part => part.partition_id == state.selectedPartition) || topic.partitions[0];
+          if (p) {
+            const limit = limitSelect ? parseInt(limitSelect.value, 10) : 50;
+            msgOffsetInput.value = Math.max(0, p.leo - limit);
+            fetchMessages();
+          }
+        }
+      });
+    }
+
     document.getElementById('clearLogsBtn').addEventListener('click', () => {
       consoleTerminal.innerHTML = '';
       logConsole('System', 'Log terminal cleared.', 'info');
@@ -301,12 +365,30 @@
 
     const partition = msgPartitionSelect.value || 0;
     const offset = msgOffsetInput.value || 0;
+    const limitSelect = document.getElementById('msgLimitSelect');
+    const limit = limitSelect ? limitSelect.value : 50;
 
     try {
-      const res = await fetch(`/api/v1/topics/${encodeURIComponent(state.selectedTopic)}/messages?partition=${partition}&offset=${offset}&limit=50`);
+      const res = await fetch(`/api/v1/topics/${encodeURIComponent(state.selectedTopic)}/messages?partition=${partition}&offset=${offset}&limit=${limit}`);
       if (!res.ok) return;
-      const msgs = await res.json();
+      const data = await res.json();
+
+      let msgs = [];
+      let leo = 0;
+      let reqOffset = parseInt(offset, 10);
+      let pageLimit = parseInt(limit, 10);
+
+      if (Array.isArray(data)) {
+        msgs = data;
+      } else if (data && data.messages) {
+        msgs = data.messages;
+        leo = data.leo || 0;
+        reqOffset = data.offset || 0;
+        pageLimit = data.limit || 50;
+      }
+
       renderMessagesTable(msgs);
+      updatePaginationControls(msgs, reqOffset, pageLimit, leo);
     } catch (err) {
       console.error('Error fetching messages:', err);
     }
@@ -327,6 +409,40 @@
         <td class="mono" style="color:var(--text-muted);">${m.size} B</td>
       </tr>
     `).join('');
+  }
+
+  function updatePaginationControls(msgs, offset, limit, leo) {
+    const infoText = document.getElementById('paginationInfoText');
+    const pageDisplay = document.getElementById('currentPageDisplay');
+    const btnFirst = document.getElementById('btnPageFirst');
+    const btnPrev = document.getElementById('btnPagePrev');
+    const btnNext = document.getElementById('btnPageNext');
+    const btnLast = document.getElementById('btnPageLast');
+
+    if (!infoText) return;
+
+    if (!msgs || msgs.length === 0) {
+      infoText.textContent = `Showing records offset 0 - 0 of ${formatNumber(leo)}`;
+      if (pageDisplay) pageDisplay.textContent = `Page 1 of ${formatNumber(Math.ceil(leo / limit) || 1)}`;
+      if (btnFirst) btnFirst.disabled = true;
+      if (btnPrev) btnPrev.disabled = true;
+      if (btnNext) btnNext.disabled = true;
+      if (btnLast) btnLast.disabled = true;
+      return;
+    }
+
+    const firstOffset = msgs[0].offset;
+    const lastOffset = msgs[msgs.length - 1].offset;
+    const totalPages = Math.ceil(leo / limit) || 1;
+    const currentPage = Math.floor(offset / limit) + 1;
+
+    infoText.textContent = `Showing records offset ${formatNumber(firstOffset)} - ${formatNumber(lastOffset)} of ${formatNumber(leo)}`;
+    if (pageDisplay) pageDisplay.textContent = `Page ${formatNumber(currentPage)} of ${formatNumber(totalPages)}`;
+
+    if (btnFirst) btnFirst.disabled = (offset === 0);
+    if (btnPrev) btnPrev.disabled = (offset === 0);
+    if (btnNext) btnNext.disabled = (lastOffset >= leo - 1 || msgs.length < limit);
+    if (btnLast) btnLast.disabled = (lastOffset >= leo - 1 || msgs.length < limit);
   }
 
   // FETCH CONSUMER GROUPS

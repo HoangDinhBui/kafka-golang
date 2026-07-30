@@ -84,6 +84,24 @@ func EncodeResponseHeader(w io.Writer, header *ResponseHeader) error {
 }
 
 // ============================================================================
+// FUNCTION: EncodeRequestHeader
+// Description: Writes the RequestHeader to an io.Writer stream.
+// ============================================================================
+func EncodeRequestHeader(w io.Writer, header *RequestHeader) error {
+	if err := WriteInt16(w, header.ApiKey); err != nil {
+		return err
+	}
+	if err := WriteInt16(w, header.ApiVersion); err != nil {
+		return err
+	}
+	if err := WriteInt32(w, header.CorrelationId); err != nil {
+		return err
+	}
+	return WriteString(w, header.ClientId)
+}
+
+
+// ============================================================================
 // PRIMITIVE HELPERS: Readers & Writers
 // Description: Utilities for encoding/decoding Kafka protocol primitive types.
 // ============================================================================

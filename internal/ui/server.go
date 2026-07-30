@@ -33,6 +33,7 @@ type UIServer struct {
 func NewServer(handler *server.Handler, port int) *UIServer {
 	collector := NewTelemetryCollector()
 	wsHub := NewWSHub()
+	handler.SetTelemetryListener(collector)
 
 	ui := &UIServer{
 		port:      port,
@@ -179,27 +180,44 @@ func (s *UIServer) handleTopicMessages(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	key := fmt.Sprintf("%s-%d", topicName, partitionID)
-	partitionsMap := s.handler.GetPartitions()
-	pl, exists := partitionsMap[key]
-
-	if !exists {
-		writeJSON(w, []interface{}{})
-		return
-	}
-
-	records, err := pl.Read(startOffset)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Error reading records: %v", err), http.StatusInternalServerError)
-		return
-	}
-
 	type MessageDTO struct {
 		Offset    uint64 `json:"offset"`
 		Timestamp int64  `json:"timestamp"`
 		Key       string `json:"key"`
 		Value     string `json:"value"`
 		Size      int    `json:"size"`
+	}
+
+	type PaginatedMessagesResponse struct {
+		Topic     string       `json:"topic"`
+		Partition int32        `json:"partition"`
+		Offset    uint64       `json:"offset"`
+		Limit     int          `json:"limit"`
+		LEO       uint64       `json:"leo"`
+		Messages  []MessageDTO `json:"messages"`
+	}
+
+	key := fmt.Sprintf("%s-%d", topicName, partitionID)
+	partitionsMap := s.handler.GetPartitions()
+	pl, exists := partitionsMap[key]
+
+	if !exists {
+		writeJSON(w, PaginatedMessagesResponse{
+			Topic:     topicName,
+			Partition: partitionID,
+			Offset:    startOffset,
+			Limit:     limit,
+			LEO:       0,
+			Messages:  []MessageDTO{},
+		})
+		return
+	}
+
+	leo := pl.LEO()
+	records, err := pl.Read(startOffset)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Error reading records: %v", err), http.StatusInternalServerError)
+		return
 	}
 
 	msgList := make([]MessageDTO, 0, len(records))
@@ -216,7 +234,14 @@ func (s *UIServer) handleTopicMessages(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	writeJSON(w, msgList)
+	writeJSON(w, PaginatedMessagesResponse{
+		Topic:     topicName,
+		Partition: partitionID,
+		Offset:    startOffset,
+		Limit:     limit,
+		LEO:       leo,
+		Messages:  msgList,
+	})
 }
 
 // REST HANDLER: GET /api/v1/groups
