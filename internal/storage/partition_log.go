@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"io"
 	"os"
 	"sort"
 	"strconv"
@@ -91,6 +92,42 @@ func (p *PartitionLog) Read(startOffset uint64) ([]*Record, error) {
 	}
 
 	return records, nil
+}
+
+// ============================================================================
+// FUNCTION: ReadZeroCopy
+// Description: Thread-safely streams raw segment bytes starting from startOffset
+//              directly to target socket writer w without intermediate memory allocations.
+// ============================================================================
+func (p *PartitionLog) ReadZeroCopy(startOffset uint64, maxBytes int64, w io.Writer) (int64, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	startIdx := p.findSegmentIndex(startOffset)
+	if startIdx == -1 {
+		return 0, nil
+	}
+
+	var totalTransferred int64
+	remainingBytes := maxBytes
+
+	for i := startIdx; i < len(p.segments); i++ {
+		if maxBytes > 0 && remainingBytes <= 0 {
+			break
+		}
+
+		n, err := p.segments[i].ReadZeroCopy(startOffset, remainingBytes, w)
+		totalTransferred += n
+		if err != nil {
+			return totalTransferred, err
+		}
+
+		if maxBytes > 0 {
+			remainingBytes -= n
+		}
+	}
+
+	return totalTransferred, nil
 }
 
 // ============================================================================
