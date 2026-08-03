@@ -318,7 +318,13 @@ func (h *Handler) handleFetch(bodyReader io.Reader, respWriter io.Writer) error 
 				continue
 			}
 
-			records, err := pl.Read(uint64(partData.FetchOffset))
+			var recordsBuf bytes.Buffer
+			maxBytes := int64(partData.MaxBytes)
+			if maxBytes <= 0 {
+				maxBytes = 1024 * 1024 // Default 1MB max fetch limit
+			}
+
+			bytesWritten, err := pl.ReadZeroCopy(uint64(partData.FetchOffset), maxBytes, &recordsBuf)
 			if err != nil {
 				partResponses = append(partResponses, protocol.PartitionFetchResponse{
 					PartitionId:   partData.PartitionId,
@@ -329,22 +335,19 @@ func (h *Handler) handleFetch(bodyReader io.Reader, respWriter io.Writer) error 
 				continue
 			}
 
-			// Marshal all returned records into a single byte payload
-			buf := new(bytes.Buffer)
-			var highestOffset int64 = 0
-			for _, rec := range records {
-				data, err := rec.Marshal()
-				if err == nil {
-					buf.Write(data)
-					highestOffset = int64(rec.Offset)
-				}
+			h.mu.RLock()
+			tel := h.telemetry
+			h.mu.RUnlock()
+			if tel != nil && bytesWritten > 0 {
+				tel.RecordBytesOut(uint64(bytesWritten))
 			}
 
+			leo := int64(pl.LEO())
 			partResponses = append(partResponses, protocol.PartitionFetchResponse{
 				PartitionId:   partData.PartitionId,
 				ErrorCode:     0,
-				HighWatermark: highestOffset,
-				RecordsData:   buf.Bytes(),
+				HighWatermark: leo,
+				RecordsData:   recordsBuf.Bytes(),
 			})
 		}
 

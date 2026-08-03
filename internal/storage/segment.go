@@ -136,6 +136,37 @@ func (s *Segment) Read(startOffset uint64) ([]*Record, error) {
 }
 
 // ============================================================================
+// FUNCTION: ReadZeroCopy
+// Description: Streams raw segment bytes starting from targetOffset directly to
+//              socket writer w without heap memory allocations.
+// ============================================================================
+func (s *Segment) ReadZeroCopy(startOffset uint64, maxBytes int64, w io.Writer) (int64, error) {
+	if startOffset >= s.nextOffset || maxBytes <= 0 {
+		return 0, nil
+	}
+
+	// 1. Locate starting byte position using index
+	startPos, err := s.index.Lookup(startOffset)
+	if err != nil {
+		return 0, err
+	}
+
+	// 2. Calculate available byte length from startPos to end of segment
+	availableBytes := s.currentSize - startPos
+	if availableBytes <= 0 {
+		return 0, nil
+	}
+
+	transferLength := availableBytes
+	if maxBytes > 0 && maxBytes < availableBytes {
+		transferLength = maxBytes
+	}
+
+	// 3. Stream zero-copy bytes directly to target socket writer
+	return SendFileToSocket(w, s.logFile, startPos, transferLength)
+}
+
+// ============================================================================
 // FUNCTION: IsFull
 // Description: Returns true if the segment has exceeded its maximum byte limit.
 // ============================================================================
