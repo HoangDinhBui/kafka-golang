@@ -33,6 +33,9 @@ func DefaultApiVersionResponse() *ApiVersionResponse {
 			{ApiKey: ApiKeyFetch, MinVersion: 0, MaxVersion: 8},
 			{ApiKey: ApiKeyMetadata, MinVersion: 0, MaxVersion: 5},
 			{ApiKey: ApiKeyApiVersions, MinVersion: 0, MaxVersion: 3},
+			{ApiKey: ApiKeyInitProducerId, MinVersion: 0, MaxVersion: 3},
+			{ApiKey: ApiKeyAddPartitionsToTxn, MinVersion: 0, MaxVersion: 3},
+			{ApiKey: ApiKeyEndTxn, MinVersion: 0, MaxVersion: 3},
 		},
 	}
 }

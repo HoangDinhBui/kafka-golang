@@ -21,6 +21,9 @@ const (
 	ApiKeyLeaveGroup       int16 = 13
 	ApiKeySyncGroup        int16 = 14
 	ApiKeyApiVersions      int16 = 18
+	ApiKeyInitProducerId   int16 = 22
+	ApiKeyAddPartitionsToTxn int16 = 24
+	ApiKeyEndTxn           int16 = 26
 )
 
 // ============================================================================
@@ -105,6 +108,14 @@ func EncodeRequestHeader(w io.Writer, header *RequestHeader) error {
 // PRIMITIVE HELPERS: Readers & Writers
 // Description: Utilities for encoding/decoding Kafka protocol primitive types.
 // ============================================================================
+func ReadInt8(r io.Reader) (int8, error) {
+	var buf [1]byte
+	if _, err := io.ReadFull(r, buf[:]); err != nil {
+		return 0, err
+	}
+	return int8(buf[0]), nil
+}
+
 func ReadInt16(r io.Reader) (int16, error) {
 	var buf [2]byte
 	if _, err := io.ReadFull(r, buf[:]); err != nil {
@@ -144,6 +155,26 @@ func ReadString(r io.Reader) (string, error) {
 	return string(buf), nil
 }
 
+func ReadNullableString(r io.Reader) (*string, error) {
+	length, err := ReadInt16(r)
+	if err != nil {
+		return nil, err
+	}
+	if length < 0 {
+		return nil, nil
+	}
+	if length == 0 {
+		empty := ""
+		return &empty, nil
+	}
+	buf := make([]byte, length)
+	if _, err := io.ReadFull(r, buf); err != nil {
+		return nil, err
+	}
+	str := string(buf)
+	return &str, nil
+}
+
 func ReadBytes(r io.Reader) ([]byte, error) {
 	length, err := ReadInt32(r)
 	if err != nil {
@@ -157,6 +188,11 @@ func ReadBytes(r io.Reader) ([]byte, error) {
 		return nil, err
 	}
 	return buf, nil
+}
+
+func WriteInt8(w io.Writer, val int8) error {
+	_, err := w.Write([]byte{byte(val)})
+	return err
 }
 
 func WriteInt16(w io.Writer, val int16) error {
@@ -189,6 +225,13 @@ func WriteString(w io.Writer, val string) error {
 	}
 	_, err := w.Write([]byte(val))
 	return err
+}
+
+func WriteNullableString(w io.Writer, val *string) error {
+	if val == nil {
+		return WriteInt16(w, -1)
+	}
+	return WriteString(w, *val)
 }
 
 func WriteBytes(w io.Writer, val []byte) error {
