@@ -10,6 +10,7 @@ import (
 
 	"github.com/HoangDinhBui/kafka-golang/internal/coordinator"
 	"github.com/HoangDinhBui/kafka-golang/internal/protocol"
+	"github.com/HoangDinhBui/kafka-golang/internal/security"
 	"github.com/HoangDinhBui/kafka-golang/internal/storage"
 )
 
@@ -24,15 +25,18 @@ type TelemetryListener interface {
 //              offset management, and consumer group coordinator.
 // ============================================================================
 type Handler struct {
-	dataDir          string                           // Base data directory for logs
-	nodeId           int32                            // Broker Node ID (e.g., 1)
-	host             string                           // Broker host/IP
-	port             int32                            // Broker TCP port
-	mu               sync.RWMutex                     // Mutex protecting partition logs map
-	partitions       map[string]*storage.PartitionLog // Active partition logs map (key: topic-partitionId)
-	offsetManager    *coordinator.OffsetManager       // Offset persistence manager
-	groupCoordinator *coordinator.GroupCoordinator    // Consumer group coordinator
-	telemetry        TelemetryListener                // Telemetry metric listener
+	dataDir          string                              // Base data directory for logs
+	nodeId           int32                               // Broker Node ID (e.g., 1)
+	host             string                              // Broker host/IP
+	port             int32                               // Broker TCP port
+	mu               sync.RWMutex                        // Mutex protecting partition logs map
+	partitions       map[string]*storage.PartitionLog    // Active partition logs map (key: topic-partitionId)
+	offsetManager    *coordinator.OffsetManager          // Offset persistence manager
+	groupCoordinator *coordinator.GroupCoordinator       // Consumer group coordinator
+	txnCoordinator   *coordinator.TransactionCoordinator // Transaction coordinator
+	saslAuth         *security.SASLAuthenticator         // SASL Authenticator
+	aclManager       *security.ACLManager                // ACL Manager
+	telemetry        TelemetryListener                   // Telemetry metric listener
 }
 
 // ============================================================================
@@ -42,6 +46,9 @@ type Handler struct {
 func NewHandler(dataDir string, nodeId int32, host string, port int32) *Handler {
 	offsetMgr := coordinator.NewOffsetManager()
 	groupCoord := coordinator.NewGroupCoordinator(offsetMgr)
+	txnCoord := coordinator.NewTransactionCoordinator()
+	saslAuth := security.NewSASLAuthenticator()
+	aclMgr := security.NewACLManager()
 
 	return &Handler{
 		dataDir:          dataDir,
@@ -51,6 +58,9 @@ func NewHandler(dataDir string, nodeId int32, host string, port int32) *Handler 
 		partitions:       make(map[string]*storage.PartitionLog),
 		offsetManager:    offsetMgr,
 		groupCoordinator: groupCoord,
+		txnCoordinator:   txnCoord,
+		saslAuth:         saslAuth,
+		aclManager:       aclMgr,
 	}
 }
 
@@ -86,6 +96,16 @@ func (h *Handler) HandleRequest(header *protocol.RequestHeader, bodyReader io.Re
 		return h.handleSyncGroup(bodyReader, respWriter)
 	case protocol.ApiKeyHeartbeat:
 		return h.handleHeartbeat(bodyReader, respWriter)
+	case protocol.ApiKeyInitProducerId:
+		return h.handleInitProducerId(bodyReader, respWriter)
+	case protocol.ApiKeyAddPartitionsToTxn:
+		return h.handleAddPartitionsToTxn(bodyReader, respWriter)
+	case protocol.ApiKeyEndTxn:
+		return h.handleEndTxn(bodyReader, respWriter)
+	case protocol.ApiKeySaslHandshake:
+		return h.handleSaslHandshake(bodyReader, respWriter)
+	case protocol.ApiKeySaslAuthenticate:
+		return h.handleSaslAuthenticate(bodyReader, respWriter)
 	default:
 		return fmt.Errorf("unsupported ApiKey: %d", header.ApiKey)
 	}
@@ -583,4 +603,140 @@ func (h *Handler) getOrCreatePartitionLog(topic string, partitionId int32) (*sto
 
 	h.partitions[key] = newPl
 	return newPl, nil
+}
+
+// ============================================================================
+// PRIVATE METHOD: handleInitProducerId (ApiKey 22)
+// ============================================================================
+func (h *Handler) handleInitProducerId(bodyReader io.Reader, respWriter io.Writer) error {
+	req, err := protocol.DecodeInitProducerIdRequest(bodyReader)
+	if err != nil {
+		return err
+	}
+
+	pid, epoch, err := h.txnCoordinator.InitProducerId(req.TransactionalId, req.TransactionTimeoutMs)
+	errorCode := int16(0)
+	if err != nil {
+		errorCode = 1
+	}
+
+	resp := &protocol.InitProducerIdResponse{
+		ErrorCode:     errorCode,
+		ProducerId:    pid,
+		ProducerEpoch: epoch,
+	}
+	return protocol.EncodeInitProducerIdResponse(respWriter, resp)
+}
+
+// ============================================================================
+// PRIVATE METHOD: handleAddPartitionsToTxn (ApiKey 24)
+// ============================================================================
+func (h *Handler) handleAddPartitionsToTxn(bodyReader io.Reader, respWriter io.Writer) error {
+	req, err := protocol.DecodeAddPartitionsToTxnRequest(bodyReader)
+	if err != nil {
+		return err
+	}
+
+	var results []protocol.AddPartitionsToTxnTopicResult
+	for _, tReq := range req.Topics {
+		var pResults []protocol.AddPartitionsToTxnResult
+		for _, partId := range tReq.Partitions {
+			err := h.txnCoordinator.AddPartitionsToTxn(req.TransactionalId, req.ProducerId, req.ProducerEpoch, tReq.TopicName, []int32{partId})
+			errCode := int16(0)
+			if err != nil {
+				errCode = 1
+			}
+			pResults = append(pResults, protocol.AddPartitionsToTxnResult{
+				PartitionId: partId,
+				ErrorCode:   errCode,
+			})
+		}
+		results = append(results, protocol.AddPartitionsToTxnTopicResult{
+			TopicName:  tReq.TopicName,
+			Partitions: pResults,
+		})
+	}
+
+	resp := &protocol.AddPartitionsToTxnResponse{Results: results}
+	return protocol.EncodeAddPartitionsToTxnResponse(respWriter, resp)
+}
+
+// ============================================================================
+// PRIVATE METHOD: handleEndTxn (ApiKey 26)
+// ============================================================================
+func (h *Handler) handleEndTxn(bodyReader io.Reader, respWriter io.Writer) error {
+	req, err := protocol.DecodeEndTxnRequest(bodyReader)
+	if err != nil {
+		return err
+	}
+
+	targets, err := h.txnCoordinator.EndTxn(req.TransactionalId, req.ProducerId, req.ProducerEpoch, req.Committed)
+	errorCode := int16(0)
+	if err != nil {
+		errorCode = 1
+	} else {
+		// Write control record marker to each partition
+		markerType := storage.ControlMarkerCommit
+		if !req.Committed {
+			markerType = storage.ControlMarkerAbort
+		}
+		controlRec := storage.NewControlRecord(markerType)
+
+		for _, t := range targets {
+			pl, err := h.getOrCreatePartitionLog(t.Topic, t.Partition)
+			if err == nil {
+				_ = pl.Append(controlRec)
+			}
+		}
+	}
+
+	resp := &protocol.EndTxnResponse{ErrorCode: errorCode}
+	return protocol.EncodeEndTxnResponse(respWriter, resp)
+}
+
+// ============================================================================
+// PRIVATE METHOD: handleSaslHandshake (ApiKey 17)
+// ============================================================================
+func (h *Handler) handleSaslHandshake(bodyReader io.Reader, respWriter io.Writer) error {
+	req, err := protocol.DecodeSaslHandshakeRequest(bodyReader)
+	if err != nil {
+		return err
+	}
+
+	errorCode := int16(0)
+	if !h.saslAuth.IsMechanismSupported(req.Mechanism) {
+		errorCode = 33 // UNSUPPORTED_SASL_MECHANISM
+	}
+
+	resp := &protocol.SaslHandshakeResponse{
+		ErrorCode:          errorCode,
+		EnabledMechanisms: h.saslAuth.GetEnabledMechanisms(),
+	}
+	return protocol.EncodeSaslHandshakeResponse(respWriter, resp)
+}
+
+// ============================================================================
+// PRIVATE METHOD: handleSaslAuthenticate (ApiKey 36)
+// ============================================================================
+func (h *Handler) handleSaslAuthenticate(bodyReader io.Reader, respWriter io.Writer) error {
+	req, err := protocol.DecodeSaslAuthenticateRequest(bodyReader)
+	if err != nil {
+		return err
+	}
+
+	username, err := h.saslAuth.AuthenticatePlain(req.AuthData)
+	errorCode := int16(0)
+	var errMsg *string
+	if err != nil {
+		errorCode = 58 // SASL_AUTHENTICATION_FAILED
+		msg := err.Error()
+		errMsg = &msg
+	}
+
+	resp := &protocol.SaslAuthenticateResponse{
+		ErrorCode:    errorCode,
+		ErrorMessage: errMsg,
+		AuthData:     []byte(fmt.Sprintf("welcome:%s", username)),
+	}
+	return protocol.EncodeSaslAuthenticateResponse(respWriter, resp)
 }
