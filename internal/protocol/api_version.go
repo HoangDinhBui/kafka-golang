@@ -32,10 +32,12 @@ func DefaultApiVersionResponse() *ApiVersionResponse {
 			{ApiKey: ApiKeyProduce, MinVersion: 0, MaxVersion: 8},
 			{ApiKey: ApiKeyFetch, MinVersion: 0, MaxVersion: 8},
 			{ApiKey: ApiKeyMetadata, MinVersion: 0, MaxVersion: 5},
+			{ApiKey: ApiKeySaslHandshake, MinVersion: 0, MaxVersion: 1},
 			{ApiKey: ApiKeyApiVersions, MinVersion: 0, MaxVersion: 3},
 			{ApiKey: ApiKeyInitProducerId, MinVersion: 0, MaxVersion: 3},
 			{ApiKey: ApiKeyAddPartitionsToTxn, MinVersion: 0, MaxVersion: 3},
 			{ApiKey: ApiKeyEndTxn, MinVersion: 0, MaxVersion: 3},
+			{ApiKey: ApiKeySaslAuthenticate, MinVersion: 0, MaxVersion: 1},
 		},
 	}
 }

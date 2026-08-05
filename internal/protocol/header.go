@@ -20,10 +20,12 @@ const (
 	ApiKeyHeartbeat        int16 = 12
 	ApiKeyLeaveGroup       int16 = 13
 	ApiKeySyncGroup        int16 = 14
+	ApiKeySaslHandshake    int16 = 17
 	ApiKeyApiVersions      int16 = 18
 	ApiKeyInitProducerId   int16 = 22
 	ApiKeyAddPartitionsToTxn int16 = 24
 	ApiKeyEndTxn           int16 = 26
+	ApiKeySaslAuthenticate int16 = 36
 )
 
 // ============================================================================

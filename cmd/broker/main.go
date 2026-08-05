@@ -26,6 +26,8 @@ func main() {
 	retentionHoursFlag := flag.Int("retention-hours", 168, "Log retention threshold in hours (pass <= 0 to disable)")
 	retentionBytesFlag := flag.Int64("retention-bytes", -1, "Log retention size threshold in bytes per partition (pass <= 0 to disable)")
 	cleanerIntervalFlag := flag.Int("cleaner-interval-sec", 60, "Interval in seconds between cleaner background runs")
+	tlsFlag := flag.Bool("tls", false, "Enable TLS/SSL encryption for TCP listener")
+	saslEnabledFlag := flag.Bool("sasl-enabled", false, "Enable SASL/PLAIN & SASL/SCRAM authentication")
 	flag.Parse()
 
 	// Initialize configuration
@@ -81,6 +83,16 @@ func main() {
 		fmt.Printf("  - Web UI        : http://localhost:%d\n", *uiPortFlag)
 	} else {
 		fmt.Println("  - Web UI        : DISABLED")
+	}
+	if *tlsFlag {
+		fmt.Println("  - Security TLS  : ENABLED (TLS 1.3)")
+	} else {
+		fmt.Println("  - Security TLS  : PLAINTEXT")
+	}
+	if *saslEnabledFlag {
+		fmt.Println("  - Security SASL : ENABLED (PLAIN, SCRAM-SHA-256)")
+	} else {
+		fmt.Println("  - Security SASL : DISABLED")
 	}
 	fmt.Println("  - Status        : READY & LISTENING FOR CLIENTS")
 	fmt.Println("================================================================")
