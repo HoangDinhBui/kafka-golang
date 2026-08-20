@@ -86,7 +86,7 @@ func DecodeOffsetCommitRequest(r io.Reader) (*OffsetCommitRequest, error) {
 		return nil, err
 	}
 
-	numTopics, err := ReadInt32(r)
+	numTopics, err := ReadArrayCount(r)
 	if err != nil {
 		return nil, err
 	}
@@ -98,7 +98,7 @@ func DecodeOffsetCommitRequest(r io.Reader) (*OffsetCommitRequest, error) {
 			return nil, err
 		}
 
-		numPartitions, err := ReadInt32(r)
+		numPartitions, err := ReadArrayCount(r)
 		if err != nil {
 			return nil, err
 		}
@@ -228,7 +228,7 @@ func DecodeOffsetFetchRequest(r io.Reader) (*OffsetFetchRequest, error) {
 		return nil, err
 	}
 
-	numTopics, err := ReadInt32(r)
+	numTopics, err := ReadArrayCount(r)
 	if err != nil {
 		return nil, err
 	}
@@ -240,7 +240,7 @@ func DecodeOffsetFetchRequest(r io.Reader) (*OffsetFetchRequest, error) {
 			return nil, err
 		}
 
-		numPartitions, err := ReadInt32(r)
+		numPartitions, err := ReadArrayCount(r)
 		if err != nil {
 			return nil, err
 		}

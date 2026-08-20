@@ -77,7 +77,7 @@ func DecodeFetchRequest(r io.Reader) (*FetchRequest, error) {
 	if err != nil {
 		return nil, err
 	}
-	topicCount, err := ReadInt32(r)
+	topicCount, err := ReadArrayCount(r)
 	if err != nil {
 		return nil, err
 	}
@@ -89,7 +89,7 @@ func DecodeFetchRequest(r io.Reader) (*FetchRequest, error) {
 			if err != nil {
 				return nil, err
 			}
-			partitionCount, err := ReadInt32(r)
+			partitionCount, err := ReadArrayCount(r)
 			if err != nil {
 				return nil, err
 			}

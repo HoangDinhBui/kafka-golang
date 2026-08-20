@@ -1,6 +1,7 @@
 package server
 
 import (
+	"crypto/tls"
 	"fmt"
 	"net"
 	"sync"
@@ -11,12 +12,13 @@ import (
 // Description: Manages the TCP listener lifecycle and spawns connection handlers.
 // ============================================================================
 type TCPServer struct {
-	addr     string         // TCP binding address (e.g., ":9092" or "127.0.0.1:9092")
-	handler  *Handler       // Reference to request router handler
-	listener net.Listener   // Active TCP network listener
-	quit     chan struct{}  // Signal channel for graceful shutdown
-	wg       sync.WaitGroup // WaitGroup tracking active client connection routines
-	mu       sync.RWMutex   // Mutex protecting listener access
+	addr      string         // TCP binding address (e.g., ":9092" or "127.0.0.1:9092")
+	handler   *Handler       // Reference to request router handler
+	listener  net.Listener   // Active TCP network listener
+	tlsConfig *tls.Config    // Optional TLS config; when set, Start() binds a TLS listener instead of plaintext TCP
+	quit      chan struct{}  // Signal channel for graceful shutdown
+	wg        sync.WaitGroup // WaitGroup tracking active client connection routines
+	mu        sync.RWMutex   // Mutex protecting listener access
 }
 
 // ============================================================================
@@ -31,6 +33,14 @@ func NewTCPServer(addr string, handler *Handler) *TCPServer {
 	}
 }
 
+// SetTLSConfig enables TLS on the listener bound by the next Start() call.
+// Must be called before Start(); has no effect on an already-bound listener.
+func (s *TCPServer) SetTLSConfig(cfg *tls.Config) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tlsConfig = cfg
+}
+
 // ============================================================================
 // FUNCTION: Start
 // Description: Binds to the TCP port and listens for client connections in a loop.
@@ -38,7 +48,13 @@ func NewTCPServer(addr string, handler *Handler) *TCPServer {
 func (s *TCPServer) Start() error {
 	s.mu.Lock()
 	if s.listener == nil {
-		listener, err := net.Listen("tcp", s.addr)
+		var listener net.Listener
+		var err error
+		if s.tlsConfig != nil {
+			listener, err = tls.Listen("tcp", s.addr, s.tlsConfig)
+		} else {
+			listener, err = net.Listen("tcp", s.addr)
+		}
 		if err != nil {
 			s.mu.Unlock()
 			return fmt.Errorf("failed to bind to TCP address %s: %w", s.addr, err)

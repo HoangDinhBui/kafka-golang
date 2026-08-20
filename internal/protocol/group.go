@@ -78,7 +78,7 @@ func DecodeJoinGroupRequest(r io.Reader) (*JoinGroupRequest, error) {
 		return nil, err
 	}
 
-	numProtocols, err := ReadInt32(r)
+	numProtocols, err := ReadArrayCount(r)
 	if err != nil {
 		return nil, err
 	}
@@ -195,7 +195,7 @@ func DecodeSyncGroupRequest(r io.Reader) (*SyncGroupRequest, error) {
 		return nil, err
 	}
 
-	numAssignments, err := ReadInt32(r)
+	numAssignments, err := ReadArrayCount(r)
 	if err != nil {
 		return nil, err
 	}
