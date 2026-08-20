@@ -96,7 +96,7 @@ func DecodeAddPartitionsToTxnRequest(r io.Reader) (*AddPartitionsToTxnRequest, e
 		return nil, err
 	}
 
-	topicLen, err := ReadInt32(r)
+	topicLen, err := ReadArrayCount(r)
 	if err != nil {
 		return nil, err
 	}
@@ -108,7 +108,7 @@ func DecodeAddPartitionsToTxnRequest(r io.Reader) (*AddPartitionsToTxnRequest, e
 			return nil, err
 		}
 
-		pLen, err := ReadInt32(r)
+		pLen, err := ReadArrayCount(r)
 		if err != nil {
 			return nil, err
 		}

@@ -2,8 +2,40 @@ package protocol
 
 import (
 	"encoding/binary"
+	"fmt"
 	"io"
 )
+
+// maxProtocolFieldBytes bounds any client-supplied byte-field length prefix
+// (e.g. record batch payloads, SASL auth data). Without this cap, a forged
+// length near the int32 max forces a multi-gigabyte allocation attempt from
+// just 4 bytes of attacker input, regardless of how much data actually
+// follows on the wire.
+const maxProtocolFieldBytes = 64 * 1024 * 1024 // 64 MiB
+
+// maxProtocolArrayLen bounds any client-supplied array/list length prefix
+// used to size a slice allocation (e.g. topic/partition/member counts). The
+// same forged-length amplification applies: make([]T, n) is sized directly
+// from a 4-byte count before a single element is read.
+const maxProtocolArrayLen = 1 << 20 // 1,048,576 elements
+
+// ReadArrayCount reads a signed 32-bit array/list length prefix, rejecting
+// implausibly large values before they can be used to size an allocation.
+// Negative values (some Kafka API versions use -1 for "null array") are
+// normalized to 0 rather than treated as an error.
+func ReadArrayCount(r io.Reader) (int32, error) {
+	count, err := ReadInt32(r)
+	if err != nil {
+		return 0, err
+	}
+	if count < 0 {
+		return 0, nil
+	}
+	if count > maxProtocolArrayLen {
+		return 0, fmt.Errorf("array count %d exceeds maximum allowed %d", count, maxProtocolArrayLen)
+	}
+	return count, nil
+}
 
 // ============================================================================
 // API KEYS CONSTANTS
@@ -184,6 +216,9 @@ func ReadBytes(r io.Reader) ([]byte, error) {
 	}
 	if length <= 0 {
 		return nil, nil
+	}
+	if length > maxProtocolFieldBytes {
+		return nil, fmt.Errorf("byte field length %d exceeds maximum allowed %d", length, maxProtocolFieldBytes)
 	}
 	buf := make([]byte, length)
 	if _, err := io.ReadFull(r, buf); err != nil {

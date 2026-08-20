@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -698,5 +699,128 @@ func TestTCPServer_TLS(t *testing.T) {
 	corrId, err := protocol.ReadInt32(r)
 	if err != nil || corrId != 42 {
 		t.Fatalf("expected CorrelationId 42 over TLS, got %d, err: %v", corrId, err)
+	}
+}
+
+// ============================================================================
+// TEST: TestConnectionHandler_RejectsOversizedFrame
+// Description: Regression test for a single-packet memory-exhaustion bug:
+//              ConnectionHandler.Handle() read the 4-byte request-size
+//              prefix and immediately called make([]byte, requestSize) with
+//              no upper bound, so a forged size near the uint32 max (~4 GiB)
+//              would force a multi-gigabyte allocation attempt before a
+//              single payload byte arrived. Verifies a claimed size beyond
+//              maxRequestFrameBytes now closes the connection immediately
+//              instead of attempting the allocation.
+// ============================================================================
+func TestConnectionHandler_RejectsOversizedFrame(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "kafka_oversized_frame_test_*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	handler := NewHandler(tmpDir, 1, "127.0.0.1", 0)
+	server := NewTCPServer("127.0.0.1:0", handler)
+	go func() { _ = server.Start() }()
+	for i := 0; i < 50 && server.Addr() == nil; i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if server.Addr() == nil {
+		t.Fatalf("Server failed to bind listener")
+	}
+	defer server.Stop()
+
+	conn, err := net.Dial("tcp", server.Addr().String())
+	if err != nil {
+		t.Fatalf("Failed to dial server: %v", err)
+	}
+	defer conn.Close()
+
+	// Claim a frame far larger than maxRequestFrameBytes without sending any
+	// payload bytes at all — if the server allocated based on this claim
+	// before validating it, this alone would attempt a multi-gigabyte alloc.
+	var sizeBuf [4]byte
+	binary.BigEndian.PutUint32(sizeBuf[:], 0xFFFFFFF0) // ~4 GiB claimed size
+	if _, err := conn.Write(sizeBuf[:]); err != nil {
+		t.Fatalf("failed to write oversized size header: %v", err)
+	}
+
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := io.ReadFull(conn, sizeBuf[:]); err == nil {
+		t.Error("expected the connection to be closed for an oversized frame, but got a response")
+	}
+}
+
+// ============================================================================
+// TEST: TestHandler_Produce_RejectsPathTraversalTopicName
+// Description: Regression test for a path-traversal bug: getOrCreatePartitionLog
+//              joined the raw, client-supplied topic name directly under
+//              dataDir and called os.MkdirAll on the result, so a topic
+//              name like "../../evil" would create files outside dataDir
+//              entirely. Verifies such a topic is now rejected (per-partition
+//              error, no directory created outside dataDir) while an
+//              ordinary topic name still works.
+// ============================================================================
+func TestHandler_Produce_RejectsPathTraversalTopicName(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "kafka_path_traversal_test_*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dataDir := filepath.Join(tmpDir, "data")
+	handler := NewHandler(dataDir, 1, "127.0.0.1", 0)
+
+	sendProduce := func(topic string) int16 {
+		header := &protocol.RequestHeader{ApiKey: protocol.ApiKeyProduce, CorrelationId: 1, ClientId: "traversal-test"}
+		body := new(bytes.Buffer)
+		_ = protocol.EncodeProduceRequest(body, &protocol.ProduceRequest{
+			Acks:    1,
+			Timeout: 1000,
+			Topics: []protocol.TopicProduceData{{
+				TopicName:  topic,
+				Partitions: []protocol.PartitionProduceData{{PartitionId: 0, RecordsData: mustMarshalRecord(t, "payload")}},
+			}},
+		})
+		respBuf := new(bytes.Buffer)
+		if err := handler.HandleRequest(header, body, respBuf, security.NewSASLSession()); err != nil {
+			t.Fatalf("HandleRequest failed: %v", err)
+		}
+		respWithCorrId := new(bytes.Buffer)
+		_ = protocol.WriteInt32(respWithCorrId, 1)
+		respWithCorrId.Write(respBuf.Bytes())
+		resp := decodeProduceResponse(t, respWithCorrId.Bytes())
+		return resp.Topics[0].Partitions[0].ErrorCode
+	}
+
+	if code := sendProduce("../../evil-traversal"); code == 0 {
+		t.Error("expected a path-traversal topic name to be rejected, got ErrorCode 0")
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, "evil-traversal-0")); err == nil {
+		t.Error("expected no directory to be created outside dataDir for a path-traversal topic name")
+	}
+
+	if code := sendProduce("legit-topic"); code != 0 {
+		t.Errorf("expected an ordinary topic name to be accepted, got ErrorCode %d", code)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "legit-topic-0")); err != nil {
+		t.Errorf("expected a directory to be created under dataDir for a valid topic name: %v", err)
+	}
+}
+
+func TestIsValidTopicName(t *testing.T) {
+	valid := []string{"orders", "my.topic.name", "topic_with_underscores", "topic-with-dashes", "__consumer_offsets"}
+	for _, name := range valid {
+		if !isValidTopicName(name) {
+			t.Errorf("expected %q to be a valid topic name", name)
+		}
+	}
+
+	invalid := []string{"", ".", "..", "../etc/evil", "a/b", "a\\b", strings.Repeat("a", 250)}
+	for _, name := range invalid {
+		if isValidTopicName(name) {
+			t.Errorf("expected %q to be rejected as an invalid topic name", name)
+		}
 	}
 }

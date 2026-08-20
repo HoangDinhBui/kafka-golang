@@ -665,6 +665,10 @@ func (h *Handler) handleHeartbeat(bodyReader io.Reader, respWriter io.Writer) er
 // Description: Thread-safely retrieves or initializes a PartitionLog instance.
 // ============================================================================
 func (h *Handler) getOrCreatePartitionLog(topic string, partitionId int32) (*storage.PartitionLog, error) {
+	if !isValidTopicName(topic) {
+		return nil, fmt.Errorf("invalid topic name: %q", topic)
+	}
+
 	key := fmt.Sprintf("%s-%d", topic, partitionId)
 
 	h.mu.RLock()
@@ -692,6 +696,30 @@ func (h *Handler) getOrCreatePartitionLog(topic string, partitionId int32) (*sto
 
 	h.partitions[key] = newPl
 	return newPl, nil
+}
+
+// isValidTopicName reports whether topic is safe to use when building a
+// filesystem path (getOrCreatePartitionLog joins it directly under
+// h.dataDir). Without this check, a topic name such as "../../etc/evil"
+// sent in a Produce/Fetch/EndTxn request would let filepath.Join walk the
+// resulting directory outside dataDir entirely, letting a client make the
+// broker create files at an arbitrary filesystem location it has write
+// access to. Mirrors Kafka's own legal topic name charset.
+func isValidTopicName(topic string) bool {
+	if topic == "" || len(topic) > 249 || topic == "." || topic == ".." {
+		return false
+	}
+	for _, r := range topic {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '.' || r == '_' || r == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // ============================================================================

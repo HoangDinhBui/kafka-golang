@@ -56,7 +56,7 @@ type MetadataResponse struct {
 // Description: Decodes a MetadataRequest from an io.Reader stream.
 // ============================================================================
 func DecodeMetadataRequest(r io.Reader) (*MetadataRequest, error) {
-	topicCount, err := ReadInt32(r)
+	topicCount, err := ReadArrayCount(r)
 	if err != nil {
 		return nil, err
 	}

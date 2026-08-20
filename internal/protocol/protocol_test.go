@@ -234,3 +234,179 @@ func TestFetchRequestResponse(t *testing.T) {
 		t.Fatalf("EncodeFetchResponse failed: %v", err)
 	}
 }
+
+// ============================================================================
+// TEST: TestReadArrayCount_RejectsImplausiblyLargeCounts
+// Description: Regression test for a forged-length amplification bug: a
+//              client-supplied array/list count was passed straight into
+//              make([]T, count) by every decoder (Produce, Fetch, JoinGroup,
+//              SyncGroup, OffsetCommit, OffsetFetch, AddPartitionsToTxn,
+//              Metadata) with no upper bound, so a single 4-byte forged
+//              count near math.MaxInt32 could force a multi-gigabyte
+//              allocation attempt. ReadArrayCount now rejects it instead.
+// ============================================================================
+func TestReadArrayCount_RejectsImplausiblyLargeCounts(t *testing.T) {
+	buf := new(bytes.Buffer)
+	_ = WriteInt32(buf, 2000000000) // ~2 billion, would size a multi-GB slice
+
+	if _, err := ReadArrayCount(buf); err == nil {
+		t.Error("expected ReadArrayCount to reject an implausibly large count, got nil error")
+	}
+}
+
+func TestReadArrayCount_NegativeNormalizesToZero(t *testing.T) {
+	buf := new(bytes.Buffer)
+	_ = WriteInt32(buf, -1)
+
+	count, err := ReadArrayCount(buf)
+	if err != nil {
+		t.Fatalf("expected no error for a negative (null-array) count, got %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected negative count to normalize to 0, got %d", count)
+	}
+}
+
+func TestReadArrayCount_AllowsReasonableCounts(t *testing.T) {
+	buf := new(bytes.Buffer)
+	_ = WriteInt32(buf, 100)
+
+	count, err := ReadArrayCount(buf)
+	if err != nil {
+		t.Fatalf("expected a reasonable count to be accepted, got %v", err)
+	}
+	if count != 100 {
+		t.Errorf("expected count 100, got %d", count)
+	}
+}
+
+// ============================================================================
+// TEST: TestReadBytes_RejectsImplausiblyLargeLength
+// Description: Regression test for the same amplification bug applied to
+//              raw byte fields (RecordsData, SASL AuthData, group assignment
+//              metadata): a forged int32 length near math.MaxInt32 could
+//              force a multi-gigabyte make([]byte, length) from 4 bytes of
+//              input, regardless of how much data actually followed.
+// ============================================================================
+func TestReadBytes_RejectsImplausiblyLargeLength(t *testing.T) {
+	buf := new(bytes.Buffer)
+	_ = WriteInt32(buf, 2000000000) // ~2 billion bytes claimed, none actually sent
+
+	if _, err := ReadBytes(buf); err == nil {
+		t.Error("expected ReadBytes to reject an implausibly large length, got nil error")
+	}
+}
+
+func TestReadBytes_AllowsReasonableLength(t *testing.T) {
+	buf := new(bytes.Buffer)
+	payload := []byte("hello-world")
+	_ = WriteBytes(buf, payload)
+
+	got, err := ReadBytes(buf)
+	if err != nil {
+		t.Fatalf("expected a reasonable byte field to be accepted, got %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Errorf("expected %q, got %q", payload, got)
+	}
+}
+
+// ============================================================================
+// TEST: TestDecoders_TruncatedInputErrorsWithoutPanic
+// Description: Feeds each request decoder a claimed-but-truncated payload
+//              (a plausible array count with no actual elements behind it)
+//              to verify malformed/adversarial input produces a decode
+//              error rather than a panic (e.g. index-out-of-range or a huge
+//              allocation attempt).
+// ============================================================================
+func TestDecoders_TruncatedInputErrorsWithoutPanic(t *testing.T) {
+	buildTruncated := func(count int32) *bytes.Buffer {
+		buf := new(bytes.Buffer)
+		_ = WriteInt32(buf, count) // claim `count` elements, then provide none
+		return buf
+	}
+
+	cases := []struct {
+		name   string
+		decode func(*bytes.Buffer) error
+	}{
+		{"Metadata", func(b *bytes.Buffer) error { _, err := DecodeMetadataRequest(b); return err }},
+		{"JoinGroup", func(b *bytes.Buffer) error {
+			full := new(bytes.Buffer)
+			_ = WriteString(full, "group")
+			_ = WriteInt32(full, 1000)
+			_ = WriteInt32(full, 1000)
+			_ = WriteString(full, "member")
+			_ = WriteString(full, "consumer")
+			full.Write(b.Bytes())
+			_, err := DecodeJoinGroupRequest(full)
+			return err
+		}},
+		{"SyncGroup", func(b *bytes.Buffer) error {
+			full := new(bytes.Buffer)
+			_ = WriteString(full, "group")
+			_ = WriteInt32(full, 1)
+			_ = WriteString(full, "member")
+			full.Write(b.Bytes())
+			_, err := DecodeSyncGroupRequest(full)
+			return err
+		}},
+		{"OffsetCommit", func(b *bytes.Buffer) error {
+			full := new(bytes.Buffer)
+			_ = WriteString(full, "group")
+			_ = WriteInt32(full, 1)
+			_ = WriteString(full, "member")
+			_ = WriteInt64(full, -1)
+			full.Write(b.Bytes())
+			_, err := DecodeOffsetCommitRequest(full)
+			return err
+		}},
+		{"OffsetFetch", func(b *bytes.Buffer) error {
+			full := new(bytes.Buffer)
+			_ = WriteString(full, "group")
+			full.Write(b.Bytes())
+			_, err := DecodeOffsetFetchRequest(full)
+			return err
+		}},
+		{"AddPartitionsToTxn", func(b *bytes.Buffer) error {
+			full := new(bytes.Buffer)
+			_ = WriteString(full, "txn-id")
+			_ = WriteInt64(full, 1)
+			_ = WriteInt16(full, 0)
+			full.Write(b.Bytes())
+			_, err := DecodeAddPartitionsToTxnRequest(full)
+			return err
+		}},
+		{"Produce", func(b *bytes.Buffer) error {
+			full := new(bytes.Buffer)
+			_ = WriteInt16(full, 1)
+			_ = WriteInt32(full, 1000)
+			full.Write(b.Bytes())
+			_, err := DecodeProduceRequest(full)
+			return err
+		}},
+		{"Fetch", func(b *bytes.Buffer) error {
+			full := new(bytes.Buffer)
+			_ = WriteInt32(full, -1)
+			_ = WriteInt32(full, 500)
+			_ = WriteInt32(full, 1)
+			full.Write(b.Bytes())
+			_, err := DecodeFetchRequest(full)
+			return err
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("decoder panicked on truncated input: %v", r)
+				}
+			}()
+			// Claim 5 elements but supply none: must error, never panic.
+			if err := tc.decode(buildTruncated(5)); err == nil {
+				t.Error("expected an error decoding a truncated payload, got nil")
+			}
+		})
+	}
+}

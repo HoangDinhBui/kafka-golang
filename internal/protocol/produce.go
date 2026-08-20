@@ -71,7 +71,7 @@ func DecodeProduceRequest(r io.Reader) (*ProduceRequest, error) {
 	if err != nil {
 		return nil, err
 	}
-	topicCount, err := ReadInt32(r)
+	topicCount, err := ReadArrayCount(r)
 	if err != nil {
 		return nil, err
 	}
@@ -83,7 +83,7 @@ func DecodeProduceRequest(r io.Reader) (*ProduceRequest, error) {
 			if err != nil {
 				return nil, err
 			}
-			partitionCount, err := ReadInt32(r)
+			partitionCount, err := ReadArrayCount(r)
 			if err != nil {
 				return nil, err
 			}
@@ -95,16 +95,9 @@ func DecodeProduceRequest(r io.Reader) (*ProduceRequest, error) {
 					if err != nil {
 						return nil, err
 					}
-					recordsSize, err := ReadInt32(r)
+					recordsData, err := ReadBytes(r)
 					if err != nil {
 						return nil, err
-					}
-					var recordsData []byte
-					if recordsSize > 0 {
-						recordsData = make([]byte, recordsSize)
-						if _, err := io.ReadFull(r, recordsData); err != nil {
-							return nil, err
-						}
 					}
 					partitions[j] = PartitionProduceData{
 						PartitionId: partId,
