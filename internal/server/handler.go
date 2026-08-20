@@ -76,7 +76,7 @@ func (h *Handler) SetTelemetryListener(l TelemetryListener) {
 // FUNCTION: HandleRequest
 // Description: Dispatches an incoming request to the appropriate API handler.
 // ============================================================================
-func (h *Handler) HandleRequest(header *protocol.RequestHeader, bodyReader io.Reader, respWriter io.Writer) error {
+func (h *Handler) HandleRequest(header *protocol.RequestHeader, bodyReader io.Reader, respWriter io.Writer, saslSession *security.SASLSession) error {
 	switch header.ApiKey {
 	case protocol.ApiKeyApiVersions:
 		return h.handleApiVersions(respWriter)
@@ -103,9 +103,9 @@ func (h *Handler) HandleRequest(header *protocol.RequestHeader, bodyReader io.Re
 	case protocol.ApiKeyEndTxn:
 		return h.handleEndTxn(bodyReader, respWriter)
 	case protocol.ApiKeySaslHandshake:
-		return h.handleSaslHandshake(bodyReader, respWriter)
+		return h.handleSaslHandshake(bodyReader, respWriter, saslSession)
 	case protocol.ApiKeySaslAuthenticate:
-		return h.handleSaslAuthenticate(bodyReader, respWriter)
+		return h.handleSaslAuthenticate(bodyReader, respWriter, saslSession)
 	default:
 		return fmt.Errorf("unsupported ApiKey: %d", header.ApiKey)
 	}
@@ -697,7 +697,7 @@ func (h *Handler) handleEndTxn(bodyReader io.Reader, respWriter io.Writer) error
 // ============================================================================
 // PRIVATE METHOD: handleSaslHandshake (ApiKey 17)
 // ============================================================================
-func (h *Handler) handleSaslHandshake(bodyReader io.Reader, respWriter io.Writer) error {
+func (h *Handler) handleSaslHandshake(bodyReader io.Reader, respWriter io.Writer, session *security.SASLSession) error {
 	req, err := protocol.DecodeSaslHandshakeRequest(bodyReader)
 	if err != nil {
 		return err
@@ -706,6 +706,8 @@ func (h *Handler) handleSaslHandshake(bodyReader io.Reader, respWriter io.Writer
 	errorCode := int16(0)
 	if !h.saslAuth.IsMechanismSupported(req.Mechanism) {
 		errorCode = 33 // UNSUPPORTED_SASL_MECHANISM
+	} else {
+		session.SetMechanism(req.Mechanism)
 	}
 
 	resp := &protocol.SaslHandshakeResponse{
@@ -717,14 +719,18 @@ func (h *Handler) handleSaslHandshake(bodyReader io.Reader, respWriter io.Writer
 
 // ============================================================================
 // PRIVATE METHOD: handleSaslAuthenticate (ApiKey 36)
+// Description: Feeds one SaslAuthenticate payload into the connection's
+//              SASL session. For SCRAM-SHA-256 this may take two round
+//              trips (client-first / client-final) before authentication
+//              concludes; the session tracks progress between calls.
 // ============================================================================
-func (h *Handler) handleSaslAuthenticate(bodyReader io.Reader, respWriter io.Writer) error {
+func (h *Handler) handleSaslAuthenticate(bodyReader io.Reader, respWriter io.Writer, session *security.SASLSession) error {
 	req, err := protocol.DecodeSaslAuthenticateRequest(bodyReader)
 	if err != nil {
 		return err
 	}
 
-	username, err := h.saslAuth.AuthenticatePlain(req.AuthData)
+	authData, _, _, err := h.saslAuth.Authenticate(session, req.AuthData)
 	errorCode := int16(0)
 	var errMsg *string
 	if err != nil {
@@ -736,7 +742,18 @@ func (h *Handler) handleSaslAuthenticate(bodyReader io.Reader, respWriter io.Wri
 	resp := &protocol.SaslAuthenticateResponse{
 		ErrorCode:    errorCode,
 		ErrorMessage: errMsg,
-		AuthData:     []byte(fmt.Sprintf("welcome:%s", username)),
+		AuthData:     authData,
 	}
 	return protocol.EncodeSaslAuthenticateResponse(respWriter, resp)
+}
+
+// ============================================================================
+// PUBLIC METHOD: AddSASLUser
+// Description: Registers a user credential for SASL/PLAIN and
+//              SASL/SCRAM-SHA-256 authentication (see cmd/broker's
+//              -sasl-user flag). Only the salted, derived credential is
+//              retained — the plaintext password is not stored.
+// ============================================================================
+func (h *Handler) AddSASLUser(username, password string) error {
+	return h.saslAuth.AddUser(username, password)
 }
