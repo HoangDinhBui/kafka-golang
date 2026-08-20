@@ -10,6 +10,13 @@ import (
 	"github.com/HoangDinhBui/kafka-golang/internal/security"
 )
 
+// maxRequestFrameBytes bounds the length prefix a client can claim for a
+// single request frame. Without this cap, a forged 4-byte size header (up
+// to ~4 GiB as a raw uint32) would force an immediate multi-gigabyte
+// make([]byte, ...) allocation before a single payload byte has even been
+// read off the socket — a trivial single-packet memory-exhaustion attack.
+const maxRequestFrameBytes = 100 * 1024 * 1024 // 100 MiB, matching Kafka's own socket.request.max.bytes default
+
 // ============================================================================
 // STRUCT: ConnectionHandler
 // Description: Manages the lifecycle and binary framing of a single TCP client connection.
@@ -53,6 +60,11 @@ func (c *ConnectionHandler) Handle() {
 		requestSize := binary.BigEndian.Uint32(sizeBuf[:])
 		if requestSize == 0 {
 			continue
+		}
+		if requestSize > maxRequestFrameBytes {
+			// Reject before allocating: the claimed size alone must never
+			// drive an allocation, regardless of how much data follows.
+			break
 		}
 
 		// 2. Read the entire request payload into memory
