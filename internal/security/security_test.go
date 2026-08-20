@@ -216,4 +216,10 @@ func TestACLManager_Authorization(t *testing.T) {
 	if acl.Authorize("guest", ResourceTypeTopic, "secrets", OpRead) {
 		t.Error("Expected guest to be denied on secrets topic")
 	}
+
+	// Regression: a Deny rule scoped to one resource must not flip every
+	// OTHER resource to deny-by-default for principals it doesn't mention.
+	if !acl.Authorize("guest", ResourceTypeTopic, "public-topic", OpRead) {
+		t.Error("Expected guest to remain authorized on an unrelated topic not covered by any rule")
+	}
 }
