@@ -54,11 +54,7 @@ func (am *ACLManager) Authorize(principal string, resourceType string, resourceN
 	am.mu.RLock()
 	defer am.mu.RUnlock()
 
-	// Default: If no ACL rules are registered in system, allow all access
-	if len(am.rules) == 0 {
-		return true
-	}
-
+	matched := false
 	allowed := false
 
 	for _, rule := range am.rules {
@@ -82,6 +78,8 @@ func (am *ACLManager) Authorize(principal string, resourceType string, resourceN
 			continue
 		}
 
+		matched = true
+
 		// Deny takes absolute precedence over Allow
 		if rule.PermissionType == PermDeny {
 			return false
@@ -90,6 +88,14 @@ func (am *ACLManager) Authorize(principal string, resourceType string, resourceN
 		if rule.PermissionType == PermAllow {
 			allowed = true
 		}
+	}
+
+	// Default: if no registered rule addresses this principal/resource/
+	// operation combination at all, allow access — same policy as an empty
+	// rule set. Without this, a single Deny rule scoped to one resource
+	// would silently flip every OTHER resource to deny-by-default too.
+	if !matched {
+		return true
 	}
 
 	return allowed

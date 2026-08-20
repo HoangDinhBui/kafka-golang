@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/HoangDinhBui/kafka-golang/internal/config"
+	"github.com/HoangDinhBui/kafka-golang/internal/security"
 	"github.com/HoangDinhBui/kafka-golang/internal/server"
 	"github.com/HoangDinhBui/kafka-golang/internal/storage"
 	"github.com/HoangDinhBui/kafka-golang/internal/ui"
@@ -28,8 +29,11 @@ func main() {
 	retentionBytesFlag := flag.Int64("retention-bytes", -1, "Log retention size threshold in bytes per partition (pass <= 0 to disable)")
 	cleanerIntervalFlag := flag.Int("cleaner-interval-sec", 60, "Interval in seconds between cleaner background runs")
 	tlsFlag := flag.Bool("tls", false, "Enable TLS/SSL encryption for TCP listener")
-	saslEnabledFlag := flag.Bool("sasl-enabled", false, "Enable SASL/PLAIN & SASL/SCRAM authentication")
+	tlsCertFlag := flag.String("tls-cert", "", "Path to PEM certificate file for TLS (generates a self-signed cert if empty)")
+	tlsKeyFlag := flag.String("tls-key", "", "Path to PEM private key file for TLS (generates a self-signed cert if empty)")
+	saslEnabledFlag := flag.Bool("sasl-enabled", false, "Require SASL/PLAIN or SASL/SCRAM-SHA-256 authentication before serving any other request")
 	saslUsersFlag := flag.String("sasl-users", "", "Comma-separated user:password pairs to register for SASL auth (e.g. admin:secret,alice:pass)")
+	aclRulesFlag := flag.String("acl-rules", "", "Comma-separated ACL rules as principal|resourceType|resourceName|operation|permission (e.g. 'User:alice|Topic|orders|Write|Allow'); resourceType: Topic/Group/Cluster, operation: Read/Write/Describe/All, permission: Allow/Deny")
 	flag.Parse()
 
 	// Initialize configuration
@@ -68,6 +72,40 @@ func main() {
 	}
 	if *saslEnabledFlag && saslUserCount == 0 {
 		log.Println("[Warning] -sasl-enabled is set but no -sasl-users were registered; no client will be able to authenticate.")
+	}
+	handler.SetSASLRequired(*saslEnabledFlag)
+
+	// Register ACL rules, if provided. With no rules registered, ACLManager
+	// defaults to allowing all access (matching the pre-existing behavior).
+	aclRuleCount := 0
+	if *aclRulesFlag != "" {
+		for _, entry := range strings.Split(*aclRulesFlag, ",") {
+			entry = strings.TrimSpace(entry)
+			if entry == "" {
+				continue
+			}
+			fields := strings.Split(entry, "|")
+			if len(fields) != 5 {
+				log.Fatalf("Invalid -acl-rules entry %q: expected principal|resourceType|resourceName|operation|permission", entry)
+			}
+			handler.AddACLRule(security.ACLRule{
+				Principal:      fields[0],
+				ResourceType:   fields[1],
+				ResourceName:   fields[2],
+				Operation:      fields[3],
+				PermissionType: fields[4],
+			})
+			aclRuleCount++
+		}
+	}
+
+	// Enable TLS on the TCP listener, if requested.
+	if *tlsFlag {
+		tlsConfig, err := security.CreateTLSConfig(*tlsCertFlag, *tlsKeyFlag)
+		if err != nil {
+			log.Fatalf("Failed to initialize TLS config: %v", err)
+		}
+		tcpServer.SetTLSConfig(tlsConfig)
 	}
 
 	var uiServer *ui.UIServer
@@ -115,10 +153,11 @@ func main() {
 		fmt.Println("  - Security TLS  : PLAINTEXT")
 	}
 	if *saslEnabledFlag {
-		fmt.Println("  - Security SASL : ENABLED (PLAIN, SCRAM-SHA-256)")
+		fmt.Printf("  - Security SASL : ENABLED (PLAIN, SCRAM-SHA-256), required, %d user(s) registered\n", saslUserCount)
 	} else {
 		fmt.Println("  - Security SASL : DISABLED")
 	}
+	fmt.Printf("  - ACL Rules     : %d rule(s) registered (allow-all if none)\n", aclRuleCount)
 	fmt.Println("  - Status        : READY & LISTENING FOR CLIENTS")
 	fmt.Println("================================================================")
 

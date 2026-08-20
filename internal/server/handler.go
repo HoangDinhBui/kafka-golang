@@ -29,15 +29,21 @@ type Handler struct {
 	nodeId           int32                               // Broker Node ID (e.g., 1)
 	host             string                              // Broker host/IP
 	port             int32                               // Broker TCP port
-	mu               sync.RWMutex                        // Mutex protecting partition logs map
+	mu               sync.RWMutex                        // Mutex protecting partition logs map, telemetry & saslRequired
 	partitions       map[string]*storage.PartitionLog    // Active partition logs map (key: topic-partitionId)
 	offsetManager    *coordinator.OffsetManager          // Offset persistence manager
 	groupCoordinator *coordinator.GroupCoordinator       // Consumer group coordinator
 	txnCoordinator   *coordinator.TransactionCoordinator // Transaction coordinator
 	saslAuth         *security.SASLAuthenticator         // SASL Authenticator
 	aclManager       *security.ACLManager                // ACL Manager
+	saslRequired     bool                                // When true, all requests other than ApiVersions/SaslHandshake/SaslAuthenticate require a successful SASL exchange first
 	telemetry        TelemetryListener                   // Telemetry metric listener
 }
+
+// errCodeTopicAuthorizationFailed mirrors the Kafka protocol's
+// TOPIC_AUTHORIZATION_FAILED error code, returned per-partition when the
+// ACLManager denies a Produce/Fetch request for a topic.
+const errCodeTopicAuthorizationFailed int16 = 29
 
 // ============================================================================
 // FUNCTION: NewHandler
@@ -71,21 +77,70 @@ func (h *Handler) SetTelemetryListener(l TelemetryListener) {
 	h.telemetry = l
 }
 
+// SetSASLRequired toggles whether clients must complete a successful SASL
+// exchange before any API request other than ApiVersions/SaslHandshake/
+// SaslAuthenticate will be served. See cmd/broker's -sasl-enabled flag.
+func (h *Handler) SetSASLRequired(required bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.saslRequired = required
+}
+
+func (h *Handler) isSASLRequired() bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.saslRequired
+}
+
+// AddSASLUser registers a user credential for SASL/PLAIN and
+// SASL/SCRAM-SHA-256 authentication (see cmd/broker's -sasl-users flag).
+// Only the salted, derived credential is retained — the plaintext password
+// is not stored.
+func (h *Handler) AddSASLUser(username, password string) error {
+	return h.saslAuth.AddUser(username, password)
+}
+
+// AddACLRule registers an access-control rule evaluated on Produce (Write)
+// and Fetch (Read) requests (see cmd/broker's -acl-rules flag). With no
+// rules registered, ACLManager defaults to allowing all access.
+func (h *Handler) AddACLRule(rule security.ACLRule) {
+	h.aclManager.AddRule(rule)
+}
+
+// authorizeTopic reports whether the session's authenticated principal
+// (empty string if unauthenticated) may perform op on topic.
+func (h *Handler) authorizeTopic(session *security.SASLSession, topic string, op string) bool {
+	principal := ""
+	if session != nil {
+		principal = session.Username
+	}
+	return h.aclManager.Authorize(principal, security.ResourceTypeTopic, topic, op)
+}
+
 
 // ============================================================================
 // FUNCTION: HandleRequest
 // Description: Dispatches an incoming request to the appropriate API handler.
 // ============================================================================
 func (h *Handler) HandleRequest(header *protocol.RequestHeader, bodyReader io.Reader, respWriter io.Writer, saslSession *security.SASLSession) error {
+	if h.isSASLRequired() && (saslSession == nil || !saslSession.Authenticated()) {
+		switch header.ApiKey {
+		case protocol.ApiKeyApiVersions, protocol.ApiKeySaslHandshake, protocol.ApiKeySaslAuthenticate:
+			// Allowed before authentication completes.
+		default:
+			return fmt.Errorf("SASL authentication required before serving ApiKey %d", header.ApiKey)
+		}
+	}
+
 	switch header.ApiKey {
 	case protocol.ApiKeyApiVersions:
 		return h.handleApiVersions(respWriter)
 	case protocol.ApiKeyMetadata:
 		return h.handleMetadata(bodyReader, respWriter)
 	case protocol.ApiKeyProduce:
-		return h.handleProduce(bodyReader, respWriter)
+		return h.handleProduce(bodyReader, respWriter, saslSession)
 	case protocol.ApiKeyFetch:
-		return h.handleFetch(bodyReader, respWriter)
+		return h.handleFetch(bodyReader, respWriter, saslSession)
 	case protocol.ApiKeyOffsetCommit:
 		return h.handleOffsetCommit(bodyReader, respWriter)
 	case protocol.ApiKeyOffsetFetch:
@@ -227,7 +282,7 @@ func (h *Handler) handleMetadata(bodyReader io.Reader, respWriter io.Writer) err
 // PRIVATE METHOD: handleProduce
 // Description: Handles Produce (ApiKey 0) requests and appends to PartitionLog.
 // ============================================================================
-func (h *Handler) handleProduce(bodyReader io.Reader, respWriter io.Writer) error {
+func (h *Handler) handleProduce(bodyReader io.Reader, respWriter io.Writer, session *security.SASLSession) error {
 	req, err := protocol.DecodeProduceRequest(bodyReader)
 	if err != nil {
 		return err
@@ -236,6 +291,23 @@ func (h *Handler) handleProduce(bodyReader io.Reader, respWriter io.Writer) erro
 	var topicResponses []protocol.TopicProduceResponse
 
 	for _, topicData := range req.Topics {
+		if !h.authorizeTopic(session, topicData.TopicName, security.OpWrite) {
+			var deniedResponses []protocol.PartitionProduceResponse
+			for _, partData := range topicData.Partitions {
+				deniedResponses = append(deniedResponses, protocol.PartitionProduceResponse{
+					PartitionId:   partData.PartitionId,
+					ErrorCode:     errCodeTopicAuthorizationFailed,
+					BaseOffset:    -1,
+					LogAppendTime: -1,
+				})
+			}
+			topicResponses = append(topicResponses, protocol.TopicProduceResponse{
+				TopicName:  topicData.TopicName,
+				Partitions: deniedResponses,
+			})
+			continue
+		}
+
 		var partResponses []protocol.PartitionProduceResponse
 
 		for _, partData := range topicData.Partitions {
@@ -315,7 +387,7 @@ func (h *Handler) handleProduce(bodyReader io.Reader, respWriter io.Writer) erro
 // PRIVATE METHOD: handleFetch
 // Description: Handles Fetch (ApiKey 1) requests and reads from PartitionLog.
 // ============================================================================
-func (h *Handler) handleFetch(bodyReader io.Reader, respWriter io.Writer) error {
+func (h *Handler) handleFetch(bodyReader io.Reader, respWriter io.Writer, session *security.SASLSession) error {
 	req, err := protocol.DecodeFetchRequest(bodyReader)
 	if err != nil {
 		return err
@@ -324,6 +396,23 @@ func (h *Handler) handleFetch(bodyReader io.Reader, respWriter io.Writer) error 
 	var topicResponses []protocol.TopicFetchResponse
 
 	for _, topicData := range req.Topics {
+		if !h.authorizeTopic(session, topicData.TopicName, security.OpRead) {
+			var deniedResponses []protocol.PartitionFetchResponse
+			for _, partData := range topicData.Partitions {
+				deniedResponses = append(deniedResponses, protocol.PartitionFetchResponse{
+					PartitionId:   partData.PartitionId,
+					ErrorCode:     errCodeTopicAuthorizationFailed,
+					HighWatermark: 0,
+					RecordsData:   nil,
+				})
+			}
+			topicResponses = append(topicResponses, protocol.TopicFetchResponse{
+				TopicName:  topicData.TopicName,
+				Partitions: deniedResponses,
+			})
+			continue
+		}
+
 		var partResponses []protocol.PartitionFetchResponse
 
 		for _, partData := range topicData.Partitions {
@@ -745,15 +834,4 @@ func (h *Handler) handleSaslAuthenticate(bodyReader io.Reader, respWriter io.Wri
 		AuthData:     authData,
 	}
 	return protocol.EncodeSaslAuthenticateResponse(respWriter, resp)
-}
-
-// ============================================================================
-// PUBLIC METHOD: AddSASLUser
-// Description: Registers a user credential for SASL/PLAIN and
-//              SASL/SCRAM-SHA-256 authentication (see cmd/broker's
-//              -sasl-user flag). Only the salted, derived credential is
-//              retained — the plaintext password is not stored.
-// ============================================================================
-func (h *Handler) AddSASLUser(username, password string) error {
-	return h.saslAuth.AddUser(username, password)
 }

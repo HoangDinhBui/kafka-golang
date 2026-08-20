@@ -11,7 +11,7 @@
 - **Zero-Copy `sendfile` Transfer Engine**: Kernel-level zero-copy file-to-socket streaming (`zero_copy.go`) for zero-allocation Consumer Fetch requests.
 - **Automated Log Retention & Compaction**: Background worker (`CleanerWorker`) for time-based retention, size-based limits, and Key Log Compaction.
 - **Transactions & Exactly-Once Semantics**: `TransactionCoordinator`, Producer ID Fencing, sequence deduplication, and Control Record Commit/Abort Markers.
-- **Security & Authentication**: TLS 1.3 encrypted TCP streams (`tls.go`), `SASL/PLAIN` & full `SASL/SCRAM-SHA-256` challenge-response authentication (`sasl.go`, `scram.go`) backed by salted PBKDF2 credentials (no plaintext passwords stored, no hardcoded accounts), and ACL permission manager (`acl.go`).
+- **Security & Authentication**: TLS-encrypted TCP listener (`tls.go`), `SASL/PLAIN` & full `SASL/SCRAM-SHA-256` challenge-response authentication (`sasl.go`, `scram.go`) backed by salted PBKDF2 credentials (no plaintext passwords stored, no hardcoded accounts), and an ACL permission manager (`acl.go`) enforced on Produce/Fetch. `-sasl-enabled` actually gates every request until the client authenticates.
 - **Embedded Web Management Dashboard**: Crisp engineering UI at `http://localhost:8085` with WebSocket real-time telemetry (Throughput, RAM, Lag) and paginated message inspector.
 - **Kafka Protocol Compatibility**: Supports core Kafka binary APIs over raw TCP.
 - **Consumer Group Coordinator**: Manages offset persistence into `__consumer_offsets`, group membership, and rebalancing.
@@ -65,9 +65,12 @@ Access the Web Management Dashboard in your browser:
 | `-retention-hours` | `168` | Log segment retention limit in hours (default 7 days) |
 | `-retention-bytes` | `-1` | Max partition log disk limit in bytes (`-1` = unlimited) |
 | `-cleaner-interval-sec` | `60` | Execution ticker interval for background cleaner worker in seconds |
-| `-tls` | `false` | Enable TLS/SSL encryption for TCP listener |
-| `-sasl-enabled` | `false` | Enable SASL/PLAIN & SASL/SCRAM authentication |
+| `-tls` | `false` | Enable TLS encryption on the TCP listener |
+| `-tls-cert` | `""` | Path to a PEM certificate file for TLS (generates a self-signed cert if empty) |
+| `-tls-key` | `""` | Path to a PEM private key file for TLS (generates a self-signed cert if empty) |
+| `-sasl-enabled` | `false` | Require SASL/PLAIN or SASL/SCRAM-SHA-256 authentication before serving any other request |
 | `-sasl-users` | `""` | Comma-separated `user:password` pairs to register for SASL auth (e.g. `admin:secret,alice:pass`). No accounts are seeded by default. |
+| `-acl-rules` | `""` | Comma-separated ACL rules as `principal\|resourceType\|resourceName\|operation\|permission` (e.g. `User:alice\|Topic\|orders\|Write\|Allow`). With no rules, all access is allowed. |
 
 ---
 
