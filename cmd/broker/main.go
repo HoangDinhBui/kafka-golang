@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -28,6 +29,7 @@ func main() {
 	cleanerIntervalFlag := flag.Int("cleaner-interval-sec", 60, "Interval in seconds between cleaner background runs")
 	tlsFlag := flag.Bool("tls", false, "Enable TLS/SSL encryption for TCP listener")
 	saslEnabledFlag := flag.Bool("sasl-enabled", false, "Enable SASL/PLAIN & SASL/SCRAM authentication")
+	saslUsersFlag := flag.String("sasl-users", "", "Comma-separated user:password pairs to register for SASL auth (e.g. admin:secret,alice:pass)")
 	flag.Parse()
 
 	// Initialize configuration
@@ -44,6 +46,29 @@ func main() {
 	handler := server.NewHandler(cfg.DataDir, int32(*nodeIdFlag), *hostFlag, int32(portInt))
 	bindAddr := fmt.Sprintf(":%s", cfg.Port)
 	tcpServer := server.NewTCPServer(bindAddr, handler)
+
+	// Register SASL user credentials, if provided. No default/hardcoded
+	// accounts are seeded — every principal must be supplied explicitly.
+	saslUserCount := 0
+	if *saslUsersFlag != "" {
+		for _, pair := range strings.Split(*saslUsersFlag, ",") {
+			pair = strings.TrimSpace(pair)
+			if pair == "" {
+				continue
+			}
+			parts := strings.SplitN(pair, ":", 2)
+			if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+				log.Fatalf("Invalid -sasl-users entry %q: expected format user:password", pair)
+			}
+			if err := handler.AddSASLUser(parts[0], parts[1]); err != nil {
+				log.Fatalf("Failed to register SASL user %q: %v", parts[0], err)
+			}
+			saslUserCount++
+		}
+	}
+	if *saslEnabledFlag && saslUserCount == 0 {
+		log.Println("[Warning] -sasl-enabled is set but no -sasl-users were registered; no client will be able to authenticate.")
+	}
 
 	var uiServer *ui.UIServer
 	if *uiPortFlag > 0 {

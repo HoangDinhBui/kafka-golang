@@ -7,6 +7,7 @@ import (
 	"net"
 
 	"github.com/HoangDinhBui/kafka-golang/internal/protocol"
+	"github.com/HoangDinhBui/kafka-golang/internal/security"
 )
 
 // ============================================================================
@@ -14,8 +15,9 @@ import (
 // Description: Manages the lifecycle and binary framing of a single TCP client connection.
 // ============================================================================
 type ConnectionHandler struct {
-	conn    net.Conn // Active TCP client socket connection
-	handler *Handler // Reference to API request handler
+	conn        net.Conn             // Active TCP client socket connection
+	handler     *Handler             // Reference to API request handler
+	saslSession *security.SASLSession // Per-connection SASL exchange state (SCRAM spans multiple requests)
 }
 
 // ============================================================================
@@ -24,8 +26,9 @@ type ConnectionHandler struct {
 // ============================================================================
 func NewConnectionHandler(conn net.Conn, handler *Handler) *ConnectionHandler {
 	return &ConnectionHandler{
-		conn:    conn,
-		handler: handler,
+		conn:        conn,
+		handler:     handler,
+		saslSession: security.NewSASLSession(),
 	}
 }
 
@@ -69,7 +72,7 @@ func (c *ConnectionHandler) Handle() {
 
 		// 4. Execute request logic and capture response payload
 		respBodyBuf := new(bytes.Buffer)
-		if err := c.handler.HandleRequest(header, reqReader, respBodyBuf); err != nil {
+		if err := c.handler.HandleRequest(header, reqReader, respBodyBuf, c.saslSession); err != nil {
 			break
 		}
 

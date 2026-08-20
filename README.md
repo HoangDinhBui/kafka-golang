@@ -1,17 +1,19 @@
 # kafka-golang
 
-> An Apache Kafka-compatible message broker, zero-copy binary wire protocol engine, and web management dashboard written in Go.
+> An Apache Kafka-compatible message broker, zero-copy binary wire protocol engine, transactions coordinator, security layer, and web management dashboard written in Go.
 
 ---
 
-## 🌟 Key Features
+## Features
 
 - **Sequential Commit Log**: High-throughput append-only disk storage (`.log`).
 - **4KB Sparse Indexing**: Fast $O(\log N)$ binary search on disk (`.index`).
 - **Zero-Copy `sendfile` Transfer Engine**: Kernel-level zero-copy file-to-socket streaming (`zero_copy.go`) for zero-allocation Consumer Fetch requests.
 - **Automated Log Retention & Compaction**: Background worker (`CleanerWorker`) for time-based retention, size-based limits, and Key Log Compaction.
+- **Transactions & Exactly-Once Semantics**: `TransactionCoordinator`, Producer ID Fencing, sequence deduplication, and Control Record Commit/Abort Markers.
+- **Security & Authentication**: TLS 1.3 encrypted TCP streams (`tls.go`), `SASL/PLAIN` & full `SASL/SCRAM-SHA-256` challenge-response authentication (`sasl.go`, `scram.go`) backed by salted PBKDF2 credentials (no plaintext passwords stored, no hardcoded accounts), and ACL permission manager (`acl.go`).
 - **Embedded Web Management Dashboard**: Crisp engineering UI at `http://localhost:8085` with WebSocket real-time telemetry (Throughput, RAM, Lag) and paginated message inspector.
-- **Kafka Protocol Compatibility**: Supports 9 core Kafka binary APIs over raw TCP.
+- **Kafka Protocol Compatibility**: Supports core Kafka binary APIs over raw TCP.
 - **Consumer Group Coordinator**: Manages offset persistence into `__consumer_offsets`, group membership, and rebalancing.
 - **Multi-Broker Replication**: High Watermark (HW) tracking and follower replication loops.
 - **KRaft Consensus Engine**: Built-in Raft metadata controller state machine without ZooKeeper.
@@ -20,7 +22,7 @@
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
 - Go `1.22` or higher.
@@ -47,11 +49,11 @@ Start the broker with default flags (TCP port `9092`, Web UI port `8085`, data d
 ```
 
 Access the Web Management Dashboard in your browser:
-👉 **[http://localhost:8085](http://localhost:8085)**
+- Web Dashboard: `http://localhost:8085`
 
 ---
 
-## ⚙️ CLI Flags
+## CLI Flags
 
 | Flag | Default | Description |
 | :--- | :--- | :--- |
@@ -63,10 +65,13 @@ Access the Web Management Dashboard in your browser:
 | `-retention-hours` | `168` | Log segment retention limit in hours (default 7 days) |
 | `-retention-bytes` | `-1` | Max partition log disk limit in bytes (`-1` = unlimited) |
 | `-cleaner-interval-sec` | `60` | Execution ticker interval for background cleaner worker in seconds |
+| `-tls` | `false` | Enable TLS/SSL encryption for TCP listener |
+| `-sasl-enabled` | `false` | Enable SASL/PLAIN & SASL/SCRAM authentication |
+| `-sasl-users` | `""` | Comma-separated `user:password` pairs to register for SASL auth (e.g. `admin:secret,alice:pass`). No accounts are seeded by default. |
 
 ---
 
-## 📊 Benchmark & Testing
+## Benchmark & Testing
 
 ### Benchmark 1,000,000 Requests
 Run the multi-threaded stress test tool with 20 worker goroutines:
@@ -83,7 +88,7 @@ go test -v -race ./...
 
 ---
 
-## 🏗️ Architecture Layout
+## Architecture Layout
 
 ```text
 kafka-golang/
@@ -94,17 +99,18 @@ kafka-golang/
 ├── internal/
 │   ├── config/                 # Default broker configuration
 │   ├── storage/                # Storage engine (.log, .index, zero_copy.go, cleaner.go)
-│   ├── protocol/               # Binary wire protocol encoders and decoders (9 APIs)
+│   ├── protocol/               # Binary wire protocol encoders and decoders
 │   ├── server/                 # TCP server, framing decoder, request router
-│   ├── coordinator/            # Consumer group coordinator and offset manager
+│   ├── coordinator/            # Consumer group coordinator, offset manager, transaction coordinator
 │   ├── replication/            # Replica manager, LEO/HW tracking, follower fetcher
 │   ├── consensus/              # KRaft (Raft) consensus node state machine
+│   ├── security/               # TLS configuration, SASL authenticator, ACL manager
 │   └── ui/                     # Web UI Server, static assets, WebSocket telemetry hub
 └── docs/                       # Architecture documentation and Q&A guide
 ```
 
 ---
 
-## 📄 License
+## License
 
 MIT
