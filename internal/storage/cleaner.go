@@ -1,11 +1,9 @@
 package storage
 
 import (
-	"fmt"
 	"io"
 	"log"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
 )
@@ -18,6 +16,14 @@ type CleanerConfig struct {
 	RetentionMs     time.Duration // Time-based retention threshold. Pass <= 0 to disable.
 	RetentionBytes  int64         // Size-based retention limit per partition log in bytes. Pass <= 0 to disable.
 	CleanerInterval time.Duration // Time interval between cleaner execution cycles.
+
+	// CompactionEnabled turns on key-based log compaction (see
+	// CompactLogSegments) for every closed segment each cycle. Off by
+	// default: compaction permanently drops superseded records and
+	// tombstones, changing what a consumer re-reading from an old offset
+	// sees, so it must be an explicit, informed opt-in rather than a
+	// default-on background behavior.
+	CompactionEnabled bool
 }
 
 // DefaultCleanerConfig returns standard production default config (7 days retention).
@@ -94,6 +100,22 @@ func (cw *CleanerWorker) RunCleanCycle() {
 	for key, pl := range partitions {
 		cw.cleanTimeRetention(key, pl)
 		cw.cleanSizeRetention(key, pl)
+		if cw.config.CompactionEnabled {
+			cw.compactPartition(key, pl)
+		}
+	}
+}
+
+// compactPartition runs key-based compaction across pl's closed segments
+// and logs how many were actually rewritten.
+func (cw *CleanerWorker) compactPartition(key string, pl *PartitionLog) {
+	rewritten, err := pl.CompactSegments()
+	if err != nil {
+		log.Printf("[CleanerWorker] Compaction: error compacting %s: %v\n", key, err)
+		return
+	}
+	if rewritten > 0 {
+		log.Printf("[CleanerWorker] Compaction: rewrote %d closed segment(s) in %s\n", rewritten, key)
 	}
 }
 
@@ -147,62 +169,57 @@ func (cw *CleanerWorker) cleanSizeRetention(key string, pl *PartitionLog) {
 	}
 }
 
-// CompactLogSegments performs Key-based Log Compaction on closed segment files,
-// retaining only the record with the highest offset for each distinct non-empty Key.
-func CompactLogSegments(seg *Segment, outDir string) (int, error) {
+// CompactLogSegments performs Key-based Log Compaction on a closed segment,
+// retaining only the record whose offset matches keyLatestOffset for its
+// key and dropping tombstones (null-value records). Unlike its original
+// implementation, the result is actually persisted: when at least one
+// record is removed, the segment's own .log/.index files are atomically
+// rewritten in place via Segment.replaceContents — previously, the
+// compacted output was written to a temp file that a deferred cleanup
+// deleted before this function even returned, so compaction had no
+// observable effect no matter how it was invoked. Returns the number of
+// records kept.
+//
+// keyLatestOffset must map every key to that key's highest offset across
+// the WHOLE partition, not just this segment — see PartitionLog.
+// CompactSegments, which builds it by scanning every segment (including the
+// active one) before compacting any closed segment. Without a global map, a
+// key whose latest occurrence lives in a DIFFERENT segment than the one
+// being compacted would be incorrectly kept here too, since nothing within
+// a single segment can tell that a newer value exists elsewhere.
+//
+// outDir MUST be seg's own directory. The caller MUST hold a lock excluding
+// concurrent Read/Append against seg for the duration of this call — see
+// PartitionLog.CompactSegments, the only production call site.
+func CompactLogSegments(seg *Segment, outDir string, keyLatestOffset map[string]uint64) (int, error) {
 	records, err := seg.Read(seg.BaseOffset())
 	if err != nil || len(records) == 0 {
 		return 0, err
 	}
 
-	// 1. Build map of Key -> highest offset record
-	keyLatestMap := make(map[string]*Record)
-	for _, rec := range records {
-		if len(rec.Key) > 0 {
-			keyLatestMap[string(rec.Key)] = rec
-		}
-	}
-
-	if len(keyLatestMap) == 0 {
-		return len(records), nil
-	}
-
-	// 2. Filter records keeping only latest key occurrences
 	compactedRecords := make([]*Record, 0, len(records))
 	for _, rec := range records {
 		if len(rec.Key) == 0 {
 			compactedRecords = append(compactedRecords, rec)
 			continue
 		}
-		if latest, ok := keyLatestMap[string(rec.Key)]; ok && latest.Offset == rec.Offset {
+		if latestOffset, ok := keyLatestOffset[string(rec.Key)]; ok && latestOffset == rec.Offset {
 			// Skip tombstone (null value) records during final compaction
 			if len(rec.Value) > 0 {
 				compactedRecords = append(compactedRecords, rec)
 			}
 		}
+		// else: a newer occurrence of this key exists elsewhere in the
+		// partition, so this one is superseded and gets dropped.
 	}
 
-	// 3. Write compacted records to temporary segment file
-	tmpName := fmt.Sprintf("compact_%020d.tmp", seg.BaseOffset())
-	tmpLogPath := filepath.Join(outDir, tmpName)
+	// Nothing was actually removed — skip the file rewrite entirely.
+	if len(compactedRecords) == len(records) {
+		return len(compactedRecords), nil
+	}
 
-	tmpFile, err := os.OpenFile(tmpLogPath, os.O_CREATE|os.O_RDWR, 0644)
-	if err != nil {
+	if err := seg.replaceContents(outDir, compactedRecords); err != nil {
 		return 0, err
-	}
-	defer func() {
-		_ = tmpFile.Close()
-		_ = os.Remove(tmpLogPath)
-	}()
-
-	for _, rec := range compactedRecords {
-		data, err := rec.Marshal()
-		if err != nil {
-			return 0, err
-		}
-		if _, err := tmpFile.Write(data); err != nil {
-			return 0, err
-		}
 	}
 
 	return len(compactedRecords), nil

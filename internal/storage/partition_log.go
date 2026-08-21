@@ -318,4 +318,52 @@ func (p *PartitionLog) Dir() string {
 	return p.dir
 }
 
+// ============================================================================
+// PUBLIC METHOD: CompactSegments
+// Description: Thread-safely runs key-based log compaction (see
+//              CompactLogSegments) across every closed segment, keeping
+//              only the highest-offset record per key and dropping
+//              tombstones. The active segment currently receiving Produce
+//              appends is never rewritten. Returns how many segments were
+//              actually rewritten (at least one record removed).
+// ============================================================================
+func (p *PartitionLog) CompactSegments() (int, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if len(p.segments) <= 1 {
+		return 0, nil
+	}
+
+	// Build the "latest offset per key" map across the ENTIRE partition,
+	// including the active segment (read-only here, never rewritten) — a
+	// key's true latest occurrence can live in any segment, not
+	// necessarily the one being compacted.
+	keyLatestOffset := make(map[string]uint64)
+	for _, seg := range p.segments {
+		records, err := seg.Read(seg.BaseOffset())
+		if err != nil {
+			return 0, err
+		}
+		for _, rec := range records {
+			if len(rec.Key) > 0 {
+				keyLatestOffset[string(rec.Key)] = rec.Offset
+			}
+		}
+	}
+
+	rewritten := 0
+	for _, seg := range p.segments[:len(p.segments)-1] {
+		before := seg.currentSize
+		if _, err := CompactLogSegments(seg, p.dir, keyLatestOffset); err != nil {
+			return rewritten, err
+		}
+		if seg.currentSize != before {
+			rewritten++
+		}
+	}
+
+	return rewritten, nil
+}
+
 

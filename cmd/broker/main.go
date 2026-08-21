@@ -28,6 +28,7 @@ func main() {
 	retentionHoursFlag := flag.Int("retention-hours", 168, "Log retention threshold in hours (pass <= 0 to disable)")
 	retentionBytesFlag := flag.Int64("retention-bytes", -1, "Log retention size threshold in bytes per partition (pass <= 0 to disable)")
 	cleanerIntervalFlag := flag.Int("cleaner-interval-sec", 60, "Interval in seconds between cleaner background runs")
+	enableCompactionFlag := flag.Bool("enable-compaction", false, "Enable key-based log compaction on closed segments during cleaner runs (permanently drops superseded records and tombstones)")
 	tlsFlag := flag.Bool("tls", false, "Enable TLS/SSL encryption for TCP listener")
 	tlsCertFlag := flag.String("tls-cert", "", "Path to PEM certificate file for TLS (generates a self-signed cert if empty)")
 	tlsKeyFlag := flag.String("tls-key", "", "Path to PEM private key file for TLS (generates a self-signed cert if empty)")
@@ -120,9 +121,10 @@ func main() {
 	}
 
 	cleanerCfg := storage.CleanerConfig{
-		RetentionMs:     retentionDur,
-		RetentionBytes:  *retentionBytesFlag,
-		CleanerInterval: time.Duration(*cleanerIntervalFlag) * time.Second,
+		RetentionMs:       retentionDur,
+		RetentionBytes:    *retentionBytesFlag,
+		CleanerInterval:   time.Duration(*cleanerIntervalFlag) * time.Second,
+		CompactionEnabled: *enableCompactionFlag,
 	}
 	cleanerWorker := storage.NewCleanerWorker(handler.GetPartitions, cleanerCfg)
 
@@ -141,6 +143,11 @@ func main() {
 		fmt.Printf("  - Retention Size: %d bytes per partition\n", *retentionBytesFlag)
 	} else {
 		fmt.Println("  - Retention Size: UNLIMITED")
+	}
+	if *enableCompactionFlag {
+		fmt.Println("  - Log Compaction: ENABLED (key-based, closed segments only)")
+	} else {
+		fmt.Println("  - Log Compaction: DISABLED")
 	}
 	if *uiPortFlag > 0 {
 		fmt.Printf("  - Web UI        : http://localhost:%d\n", *uiPortFlag)

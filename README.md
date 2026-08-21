@@ -9,7 +9,7 @@
 - **Sequential Commit Log**: High-throughput append-only disk storage (`.log`).
 - **4KB Sparse Indexing**: Fast $O(\log N)$ binary search on disk (`.index`).
 - **Zero-Copy `sendfile` Transfer Engine**: Kernel-level zero-copy file-to-socket streaming (`zero_copy.go`) for zero-allocation Consumer Fetch requests.
-- **Automated Log Retention & Compaction**: Background worker (`CleanerWorker`) for time-based retention, size-based limits, and Key Log Compaction.
+- **Automated Log Retention & Compaction**: Background worker (`CleanerWorker`) for time-based retention, size-based limits, and Key Log Compaction. Compaction (`-enable-compaction`, off by default) atomically rewrites closed segments in place, keeping each key's globally-latest record across the whole partition and dropping tombstones.
 - **Transactions & Exactly-Once Semantics**: `TransactionCoordinator`, Producer ID Fencing, sequence deduplication, and Control Record Commit/Abort Markers.
 - **Security & Authentication**: TLS-encrypted TCP listener (`tls.go`), `SASL/PLAIN` & full `SASL/SCRAM-SHA-256` challenge-response authentication (`sasl.go`, `scram.go`) backed by salted PBKDF2 credentials (no plaintext passwords stored, no hardcoded accounts), and an ACL permission manager (`acl.go`) enforced on Produce/Fetch. `-sasl-enabled` actually gates every request until the client authenticates.
 - **Embedded Web Management Dashboard**: Crisp engineering UI at `http://localhost:8085` with WebSocket real-time telemetry (Throughput, RAM, Lag) and paginated message inspector.
@@ -65,6 +65,7 @@ Access the Web Management Dashboard in your browser:
 | `-retention-hours` | `168` | Log segment retention limit in hours (default 7 days) |
 | `-retention-bytes` | `-1` | Max partition log disk limit in bytes (`-1` = unlimited) |
 | `-cleaner-interval-sec` | `60` | Execution ticker interval for background cleaner worker in seconds |
+| `-enable-compaction` | `false` | Enable key-based log compaction on closed segments during cleaner runs (permanently drops superseded records and tombstones) |
 | `-tls` | `false` | Enable TLS encryption on the TCP listener |
 | `-tls-cert` | `""` | Path to a PEM certificate file for TLS (generates a self-signed cert if empty) |
 | `-tls-key` | `""` | Path to a PEM private key file for TLS (generates a self-signed cert if empty) |
