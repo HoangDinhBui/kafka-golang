@@ -287,3 +287,87 @@ func DecodeHeartbeatRequest(r io.Reader) (*HeartbeatRequest, error) {
 func EncodeHeartbeatResponse(w io.Writer, res *HeartbeatResponse) error {
 	return WriteInt16(w, res.ErrorCode)
 }
+
+// ============================================================================
+// STRUCT: FindCoordinatorRequest (ApiKey 10)
+// Description: Sent by a client to discover which broker acts as the
+//              coordinator for a given consumer group (or transactional
+//              id), before it can start the JoinGroup flow. Real client
+//              libraries send this unconditionally as part of bootstrapping
+//              group membership — without a handler for it, they cannot
+//              proceed to JoinGroup at all, regardless of whether JoinGroup
+//              itself works.
+// ============================================================================
+type FindCoordinatorRequest struct {
+	Key string // Group ID or Transactional ID being looked up
+}
+
+// ============================================================================
+// STRUCT: FindCoordinatorResponse
+// Description: Response payload for ApiKey 10 (FindCoordinator).
+// ============================================================================
+type FindCoordinatorResponse struct {
+	ErrorCode int16  // Error code (0 = NONE)
+	NodeId    int32  // Coordinator broker's Node ID
+	Host      string // Coordinator broker's advertised host
+	Port      int32  // Coordinator broker's advertised port
+}
+
+// DecodeFindCoordinatorRequest decodes a FindCoordinatorRequest from an io.Reader stream.
+func DecodeFindCoordinatorRequest(r io.Reader) (*FindCoordinatorRequest, error) {
+	key, err := ReadString(r)
+	if err != nil {
+		return nil, err
+	}
+	return &FindCoordinatorRequest{Key: key}, nil
+}
+
+// EncodeFindCoordinatorResponse writes a FindCoordinatorResponse to an io.Writer stream.
+func EncodeFindCoordinatorResponse(w io.Writer, res *FindCoordinatorResponse) error {
+	if err := WriteInt16(w, res.ErrorCode); err != nil {
+		return err
+	}
+	if err := WriteInt32(w, res.NodeId); err != nil {
+		return err
+	}
+	if err := WriteString(w, res.Host); err != nil {
+		return err
+	}
+	return WriteInt32(w, res.Port)
+}
+
+// ============================================================================
+// STRUCT: LeaveGroupRequest (ApiKey 13)
+// Description: Sent by a consumer to voluntarily leave a group (e.g. on
+//              clean shutdown) instead of waiting for a session timeout.
+// ============================================================================
+type LeaveGroupRequest struct {
+	GroupId  string
+	MemberId string
+}
+
+// ============================================================================
+// STRUCT: LeaveGroupResponse
+// Description: Response payload for ApiKey 13 (LeaveGroup).
+// ============================================================================
+type LeaveGroupResponse struct {
+	ErrorCode int16
+}
+
+// DecodeLeaveGroupRequest decodes a LeaveGroupRequest from an io.Reader stream.
+func DecodeLeaveGroupRequest(r io.Reader) (*LeaveGroupRequest, error) {
+	groupId, err := ReadString(r)
+	if err != nil {
+		return nil, err
+	}
+	memberId, err := ReadString(r)
+	if err != nil {
+		return nil, err
+	}
+	return &LeaveGroupRequest{GroupId: groupId, MemberId: memberId}, nil
+}
+
+// EncodeLeaveGroupResponse writes a LeaveGroupResponse to an io.Writer stream.
+func EncodeLeaveGroupResponse(w io.Writer, res *LeaveGroupResponse) error {
+	return WriteInt16(w, res.ErrorCode)
+}

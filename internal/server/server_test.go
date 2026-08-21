@@ -1048,6 +1048,119 @@ func TestHandler_ACLAuthorization_GroupAndTxnHandlers(t *testing.T) {
 
 func strPtr(s string) *string { return &s }
 
+// ============================================================================
+// TEST: TestHandler_FindCoordinator
+// Description: Regression test for the missing FindCoordinator (ApiKey 10)
+//              handler: real client libraries send this before JoinGroup to
+//              discover the coordinator broker, so without a handler for it
+//              a client could not even begin the consumer-group flow
+//              (previously "unsupported ApiKey"). Verifies the broker
+//              answers by identifying itself — there is no real
+//              multi-broker cluster to route to (see internal/replication /
+//              internal/consensus, unwired from cmd/broker).
+// ============================================================================
+func TestHandler_FindCoordinator(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "kafka_find_coordinator_test_*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	handler := NewHandler(tmpDir, 7, "10.0.0.5", 9092)
+
+	header := &protocol.RequestHeader{ApiKey: protocol.ApiKeyGroupCoordinator, CorrelationId: 1, ClientId: "find-coord-test"}
+	body := new(bytes.Buffer)
+	_ = protocol.WriteString(body, "some-consumer-group")
+	respBuf := new(bytes.Buffer)
+	if err := handler.HandleRequest(header, body, respBuf, security.NewSASLSession()); err != nil {
+		t.Fatalf("HandleRequest failed: %v", err)
+	}
+
+	r := bytes.NewReader(respBuf.Bytes())
+	errCode, _ := protocol.ReadInt16(r)
+	if errCode != 0 {
+		t.Fatalf("expected ErrorCode 0, got %d", errCode)
+	}
+	nodeId, _ := protocol.ReadInt32(r)
+	if nodeId != 7 {
+		t.Errorf("expected the broker to identify itself as coordinator (NodeId 7), got %d", nodeId)
+	}
+	host, _ := protocol.ReadString(r)
+	if host != "10.0.0.5" {
+		t.Errorf("expected Host 10.0.0.5, got %q", host)
+	}
+	port, _ := protocol.ReadInt32(r)
+	if port != 9092 {
+		t.Errorf("expected Port 9092, got %d", port)
+	}
+}
+
+// ============================================================================
+// TEST: TestHandler_LeaveGroup
+// Description: Regression test for the missing LeaveGroup (ApiKey 13)
+//              handler: the ApiKey constant existed but nothing decoded,
+//              encoded, or handled it, so a client trying to leave a group
+//              cleanly got "unsupported ApiKey" and had to wait out a
+//              session timeout instead. Verifies leaving actually removes
+//              the member, and that the group ACL check (added alongside
+//              JoinGroup/SyncGroup/Heartbeat) also applies here.
+// ============================================================================
+func TestHandler_LeaveGroup(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "kafka_leave_group_test_*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	handler := NewHandler(tmpDir, 1, "127.0.0.1", 0)
+	if err := handler.AddSASLUser("grace", "grace-pass"); err != nil {
+		t.Fatalf("AddSASLUser failed: %v", err)
+	}
+	handler.AddACLRule(security.ACLRule{
+		Principal:      "grace",
+		ResourceType:   security.ResourceTypeGroup,
+		ResourceName:   "restricted-leave-group",
+		Operation:      security.OpAll,
+		PermissionType: security.PermDeny,
+	})
+	session := authenticatedTestSession(t, handler, "grace", "grace-pass")
+
+	sendLeave := func(groupId, memberId string) int16 {
+		header := &protocol.RequestHeader{ApiKey: protocol.ApiKeyLeaveGroup, CorrelationId: 1, ClientId: "leave-group-test"}
+		body := new(bytes.Buffer)
+		_ = protocol.WriteString(body, groupId)
+		_ = protocol.WriteString(body, memberId)
+		respBuf := new(bytes.Buffer)
+		if err := handler.HandleRequest(header, body, respBuf, session); err != nil {
+			t.Fatalf("HandleRequest failed: %v", err)
+		}
+		code, _ := protocol.ReadInt16(bytes.NewReader(respBuf.Bytes()))
+		return code
+	}
+
+	restrictedGroup, restrictedMember, err := handler.GetGroupCoordinator().AddMember("restricted-leave-group", "client-1", "127.0.0.1", 10000, 10000, "consumer", map[string][]byte{"range": {}})
+	if err != nil {
+		t.Fatalf("AddMember failed: %v", err)
+	}
+	if code := sendLeave(restrictedGroup.GroupID, restrictedMember.MemberID); code != errCodeGroupAuthorizationFailed {
+		t.Errorf("expected GROUP_AUTHORIZATION_FAILED (%d) leaving a restricted group, got %d", errCodeGroupAuthorizationFailed, code)
+	}
+	if _, exists := restrictedGroup.Members[restrictedMember.MemberID]; !exists {
+		t.Error("expected the member to remain in the group after a denied LeaveGroup")
+	}
+
+	openGroup, openMember, err := handler.GetGroupCoordinator().AddMember("open-leave-group", "client-2", "127.0.0.1", 10000, 10000, "consumer", map[string][]byte{"range": {}})
+	if err != nil {
+		t.Fatalf("AddMember failed: %v", err)
+	}
+	if code := sendLeave(openGroup.GroupID, openMember.MemberID); code != 0 {
+		t.Fatalf("expected LeaveGroup to succeed on an unrestricted group, got ErrorCode %d", code)
+	}
+	if _, exists := openGroup.Members[openMember.MemberID]; exists {
+		t.Error("expected the member to be removed from the group after a successful LeaveGroup")
+	}
+}
+
 func TestIsValidTopicName(t *testing.T) {
 	valid := []string{"orders", "my.topic.name", "topic_with_underscores", "topic-with-dashes", "__consumer_offsets"}
 	for _, name := range valid {

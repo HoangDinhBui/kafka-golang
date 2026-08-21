@@ -164,12 +164,16 @@ func (h *Handler) HandleRequest(header *protocol.RequestHeader, bodyReader io.Re
 		return h.handleOffsetCommit(bodyReader, respWriter, saslSession)
 	case protocol.ApiKeyOffsetFetch:
 		return h.handleOffsetFetch(bodyReader, respWriter, saslSession)
+	case protocol.ApiKeyGroupCoordinator:
+		return h.handleFindCoordinator(bodyReader, respWriter)
 	case protocol.ApiKeyJoinGroup:
 		return h.handleJoinGroup(bodyReader, respWriter, saslSession)
 	case protocol.ApiKeySyncGroup:
 		return h.handleSyncGroup(bodyReader, respWriter, saslSession)
 	case protocol.ApiKeyHeartbeat:
 		return h.handleHeartbeat(bodyReader, respWriter, saslSession)
+	case protocol.ApiKeyLeaveGroup:
+		return h.handleLeaveGroup(bodyReader, respWriter, saslSession)
 	case protocol.ApiKeyInitProducerId:
 		return h.handleInitProducerId(bodyReader, respWriter)
 	case protocol.ApiKeyAddPartitionsToTxn:
@@ -714,6 +718,56 @@ func (h *Handler) handleHeartbeat(bodyReader io.Reader, respWriter io.Writer, se
 	}
 
 	return protocol.EncodeHeartbeatResponse(respWriter, resp)
+}
+
+// ============================================================================
+// PRIVATE METHOD: handleFindCoordinator (ApiKey 10)
+// Description: Real client libraries send FindCoordinator to discover which
+//              broker is the coordinator for a group/transactional id
+//              before starting JoinGroup — without a handler for it, they
+//              cannot begin the consumer-group flow at all, regardless of
+//              whether JoinGroup itself works. This broker never runs as
+//              part of a real multi-broker cluster (see internal/replication
+//              and internal/consensus, which are not wired into cmd/broker),
+//              so it always answers by identifying itself.
+// ============================================================================
+func (h *Handler) handleFindCoordinator(bodyReader io.Reader, respWriter io.Writer) error {
+	if _, err := protocol.DecodeFindCoordinatorRequest(bodyReader); err != nil {
+		return err
+	}
+
+	resp := &protocol.FindCoordinatorResponse{
+		ErrorCode: 0,
+		NodeId:    h.nodeId,
+		Host:      h.host,
+		Port:      h.port,
+	}
+	return protocol.EncodeFindCoordinatorResponse(respWriter, resp)
+}
+
+// ============================================================================
+// PRIVATE METHOD: handleLeaveGroup (ApiKey 13)
+// Description: Lets a consumer voluntarily leave a group (e.g. on clean
+//              shutdown) instead of waiting out a session timeout.
+// ============================================================================
+func (h *Handler) handleLeaveGroup(bodyReader io.Reader, respWriter io.Writer, session *security.SASLSession) error {
+	req, err := protocol.DecodeLeaveGroupRequest(bodyReader)
+	if err != nil {
+		return err
+	}
+
+	if !h.authorizeGroup(session, req.GroupId, security.OpRead) {
+		resp := &protocol.LeaveGroupResponse{ErrorCode: errCodeGroupAuthorizationFailed}
+		return protocol.EncodeLeaveGroupResponse(respWriter, resp)
+	}
+
+	errCode := int16(0)
+	if err := h.groupCoordinator.RemoveMember(req.GroupId, req.MemberId); err != nil {
+		errCode = 25 // matches the same "unknown member/group" code Heartbeat already uses
+	}
+
+	resp := &protocol.LeaveGroupResponse{ErrorCode: errCode}
+	return protocol.EncodeLeaveGroupResponse(respWriter, resp)
 }
 
 // ============================================================================

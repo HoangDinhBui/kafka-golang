@@ -14,7 +14,7 @@
 - **Security & Authentication**: TLS-encrypted TCP listener (`tls.go`), `SASL/PLAIN` & full `SASL/SCRAM-SHA-256` challenge-response authentication (`sasl.go`, `scram.go`) backed by salted PBKDF2 credentials (no plaintext passwords stored, no hardcoded accounts), and an ACL permission manager (`acl.go`) enforced on Produce/Fetch and on consumer-group operations (JoinGroup/SyncGroup/Heartbeat/OffsetCommit/OffsetFetch) via a Group resource type, plus transitively on transactional writes (AddPartitionsToTxn/EndTxn). `-sasl-enabled` actually gates every request until the client authenticates.
 - **Embedded Web Management Dashboard**: Crisp engineering UI at `http://localhost:8085` with WebSocket real-time telemetry (Throughput, RAM, Lag) and paginated message inspector.
 - **Kafka Protocol Compatibility**: Supports core Kafka binary APIs over raw TCP.
-- **Consumer Group Coordinator**: Manages offset persistence into `__consumer_offsets`, group membership, and rebalancing.
+- **Consumer Group Coordinator**: Manages offset persistence into `__consumer_offsets`, group membership, and rebalancing, including `FindCoordinator` (this single-broker instance always identifies itself) and `LeaveGroup` for clean member departure.
 - **Multi-Broker Replication**: High Watermark (HW) tracking and follower replication loops.
 - **KRaft Consensus Engine**: Built-in Raft metadata controller state machine without ZooKeeper.
 - **Built-in Benchmark Tools**: Multi-threaded stress test tool (`cmd/stress_test`) achieving **22,000+ msgs/sec** (1,000,000 requests at < 0.9ms latency).
