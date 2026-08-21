@@ -824,3 +824,63 @@ func TestIsValidTopicName(t *testing.T) {
 		}
 	}
 }
+
+// ============================================================================
+// TEST: TestHandler_MaxPartitions
+// Description: Regression test for unbounded resource growth:
+//              getOrCreatePartitionLog previously created a new directory
+//              and open file handles for any never-before-seen topic name
+//              with no limit at all, so a client Producing to an
+//              ever-changing stream of valid topic names could grow disk
+//              usage and fd count without bound. Verifies SetMaxPartitions
+//              caps distinct topic-partitions while still allowing
+//              already-created ones to keep accepting writes.
+// ============================================================================
+func TestHandler_MaxPartitions(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "kafka_max_partitions_test_*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	handler := NewHandler(tmpDir, 1, "127.0.0.1", 0)
+	handler.SetMaxPartitions(2)
+
+	session := security.NewSASLSession()
+	produce := func(topic string, corrId int32) int16 {
+		header := &protocol.RequestHeader{ApiKey: protocol.ApiKeyProduce, CorrelationId: corrId, ClientId: "max-partitions-test"}
+		body := new(bytes.Buffer)
+		_ = protocol.EncodeProduceRequest(body, &protocol.ProduceRequest{
+			Acks:    1,
+			Timeout: 1000,
+			Topics: []protocol.TopicProduceData{{
+				TopicName:  topic,
+				Partitions: []protocol.PartitionProduceData{{PartitionId: 0, RecordsData: mustMarshalRecord(t, "payload")}},
+			}},
+		})
+		respBuf := new(bytes.Buffer)
+		if err := handler.HandleRequest(header, body, respBuf, session); err != nil {
+			t.Fatalf("HandleRequest failed: %v", err)
+		}
+		respWithCorrId := new(bytes.Buffer)
+		_ = protocol.WriteInt32(respWithCorrId, corrId)
+		respWithCorrId.Write(respBuf.Bytes())
+		resp := decodeProduceResponse(t, respWithCorrId.Bytes())
+		return resp.Topics[0].Partitions[0].ErrorCode
+	}
+
+	if code := produce("topic-a", 1); code != 0 {
+		t.Errorf("expected topic 1/2 to succeed, got ErrorCode %d", code)
+	}
+	if code := produce("topic-b", 2); code != 0 {
+		t.Errorf("expected topic 2/2 to succeed, got ErrorCode %d", code)
+	}
+	if code := produce("topic-c", 3); code == 0 {
+		t.Error("expected a 3rd distinct topic-partition past the cap of 2 to fail")
+	}
+
+	// An already-created topic-partition must still accept writes past the cap.
+	if code := produce("topic-a", 4); code != 0 {
+		t.Errorf("expected an existing topic-partition to keep working at the cap, got ErrorCode %d", code)
+	}
+}

@@ -34,6 +34,8 @@ func main() {
 	saslEnabledFlag := flag.Bool("sasl-enabled", false, "Require SASL/PLAIN or SASL/SCRAM-SHA-256 authentication before serving any other request")
 	saslUsersFlag := flag.String("sasl-users", "", "Comma-separated user:password pairs to register for SASL auth (e.g. admin:secret,alice:pass)")
 	aclRulesFlag := flag.String("acl-rules", "", "Comma-separated ACL rules as principal|resourceType|resourceName|operation|permission (e.g. 'User:alice|Topic|orders|Write|Allow'); resourceType: Topic/Group/Cluster, operation: Read/Write/Describe/All, permission: Allow/Deny")
+	maxPartitionsFlag := flag.Int("max-partitions", 10000, "Maximum number of distinct topic-partitions this broker will create (pass <= 0 to disable)")
+	maxConsumerGroupsFlag := flag.Int("max-consumer-groups", 10000, "Maximum number of distinct consumer groups this broker will create (pass <= 0 to disable)")
 	flag.Parse()
 
 	// Initialize configuration
@@ -50,6 +52,13 @@ func main() {
 	handler := server.NewHandler(cfg.DataDir, int32(*nodeIdFlag), *hostFlag, int32(portInt))
 	bindAddr := fmt.Sprintf(":%s", cfg.Port)
 	tcpServer := server.NewTCPServer(bindAddr, handler)
+
+	if *maxPartitionsFlag > 0 {
+		handler.SetMaxPartitions(*maxPartitionsFlag)
+	}
+	if *maxConsumerGroupsFlag > 0 {
+		handler.GetGroupCoordinator().SetMaxGroups(*maxConsumerGroupsFlag)
+	}
 
 	// Register SASL user credentials, if provided. No default/hardcoded
 	// accounts are seeded — every principal must be supplied explicitly.
@@ -158,6 +167,16 @@ func main() {
 		fmt.Println("  - Security SASL : DISABLED")
 	}
 	fmt.Printf("  - ACL Rules     : %d rule(s) registered (allow-all if none)\n", aclRuleCount)
+	if *maxPartitionsFlag > 0 {
+		fmt.Printf("  - Max Partitions: %d\n", *maxPartitionsFlag)
+	} else {
+		fmt.Println("  - Max Partitions: UNLIMITED")
+	}
+	if *maxConsumerGroupsFlag > 0 {
+		fmt.Printf("  - Max Groups    : %d\n", *maxConsumerGroupsFlag)
+	} else {
+		fmt.Println("  - Max Groups    : UNLIMITED")
+	}
 	fmt.Println("  - Status        : READY & LISTENING FOR CLIENTS")
 	fmt.Println("================================================================")
 

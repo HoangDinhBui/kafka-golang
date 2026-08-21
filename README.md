@@ -71,6 +71,8 @@ Access the Web Management Dashboard in your browser:
 | `-sasl-enabled` | `false` | Require SASL/PLAIN or SASL/SCRAM-SHA-256 authentication before serving any other request |
 | `-sasl-users` | `""` | Comma-separated `user:password` pairs to register for SASL auth (e.g. `admin:secret,alice:pass`). No accounts are seeded by default. |
 | `-acl-rules` | `""` | Comma-separated ACL rules as `principal\|resourceType\|resourceName\|operation\|permission` (e.g. `User:alice\|Topic\|orders\|Write\|Allow`). With no rules, all access is allowed. |
+| `-max-partitions` | `10000` | Maximum number of distinct topic-partitions this broker will create (pass `<= 0` to disable) |
+| `-max-consumer-groups` | `10000` | Maximum number of distinct consumer groups this broker will create (pass `<= 0` to disable) |
 
 ---
 

@@ -37,6 +37,7 @@ type Handler struct {
 	saslAuth         *security.SASLAuthenticator         // SASL Authenticator
 	aclManager       *security.ACLManager                // ACL Manager
 	saslRequired     bool                                // When true, all requests other than ApiVersions/SaslHandshake/SaslAuthenticate require a successful SASL exchange first
+	maxPartitions    int                                 // Cap on distinct topic-partitions this broker will create (0 = unlimited)
 	telemetry        TelemetryListener                   // Telemetry metric listener
 }
 
@@ -75,6 +76,18 @@ func (h *Handler) SetTelemetryListener(l TelemetryListener) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.telemetry = l
+}
+
+// SetMaxPartitions caps how many distinct topic-partitions this broker will
+// create. getOrCreatePartitionLog previously created a new directory + open
+// file handles for any never-before-seen topic name with no limit at all,
+// so a client Producing to an ever-changing stream of valid-looking topic
+// names could grow disk usage and file descriptors without bound. 0 (the
+// default) keeps the previous unlimited behavior.
+func (h *Handler) SetMaxPartitions(max int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.maxPartitions = max
 }
 
 // SetSASLRequired toggles whether clients must complete a successful SASL
@@ -685,6 +698,10 @@ func (h *Handler) getOrCreatePartitionLog(topic string, partitionId int32) (*sto
 	// Double check after acquiring write lock
 	if pl, exists := h.partitions[key]; exists {
 		return pl, nil
+	}
+
+	if h.maxPartitions > 0 && len(h.partitions) >= h.maxPartitions {
+		return nil, fmt.Errorf("maximum number of topic-partitions (%d) reached", h.maxPartitions)
 	}
 
 	dir := filepath.Join(h.dataDir, key)
