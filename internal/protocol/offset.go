@@ -271,6 +271,10 @@ func DecodeOffsetFetchRequest(r io.Reader) (*OffsetFetchRequest, error) {
 // Description: Writes an OffsetFetchResponse to an io.Writer stream.
 // ============================================================================
 func EncodeOffsetFetchResponse(w io.Writer, res *OffsetFetchResponse) error {
+	if err := WriteInt16(w, res.ErrorCode); err != nil {
+		return err
+	}
+
 	if err := WriteInt32(w, int32(len(res.Topics))); err != nil {
 		return err
 	}

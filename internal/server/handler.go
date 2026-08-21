@@ -45,6 +45,12 @@ type Handler struct {
 // ACLManager denies a Produce/Fetch request for a topic.
 const errCodeTopicAuthorizationFailed int16 = 29
 
+// errCodeGroupAuthorizationFailed mirrors the Kafka protocol's
+// GROUP_AUTHORIZATION_FAILED error code, returned when the ACLManager
+// denies a JoinGroup/SyncGroup/Heartbeat/OffsetCommit/OffsetFetch request
+// for a consumer group.
+const errCodeGroupAuthorizationFailed int16 = 30
+
 // ============================================================================
 // FUNCTION: NewHandler
 // Description: Initializes a new Request Handler.
@@ -117,6 +123,19 @@ func (h *Handler) authorizeTopic(session *security.SASLSession, topic string, op
 	return h.aclManager.Authorize(principal, security.ResourceTypeTopic, topic, op)
 }
 
+// authorizeGroup reports whether the session's authenticated principal
+// (empty string if unauthenticated) may perform op on the given consumer
+// group. Mirrors authorizeTopic — security.ResourceTypeGroup previously had
+// no call site anywhere in the handler, so no consumer-group ACL rule could
+// ever actually be enforced regardless of configuration.
+func (h *Handler) authorizeGroup(session *security.SASLSession, groupId string, op string) bool {
+	principal := ""
+	if session != nil {
+		principal = session.Username
+	}
+	return h.aclManager.Authorize(principal, security.ResourceTypeGroup, groupId, op)
+}
+
 
 // ============================================================================
 // FUNCTION: HandleRequest
@@ -142,19 +161,19 @@ func (h *Handler) HandleRequest(header *protocol.RequestHeader, bodyReader io.Re
 	case protocol.ApiKeyFetch:
 		return h.handleFetch(bodyReader, respWriter, saslSession)
 	case protocol.ApiKeyOffsetCommit:
-		return h.handleOffsetCommit(bodyReader, respWriter)
+		return h.handleOffsetCommit(bodyReader, respWriter, saslSession)
 	case protocol.ApiKeyOffsetFetch:
-		return h.handleOffsetFetch(bodyReader, respWriter)
+		return h.handleOffsetFetch(bodyReader, respWriter, saslSession)
 	case protocol.ApiKeyJoinGroup:
-		return h.handleJoinGroup(bodyReader, respWriter)
+		return h.handleJoinGroup(bodyReader, respWriter, saslSession)
 	case protocol.ApiKeySyncGroup:
-		return h.handleSyncGroup(bodyReader, respWriter)
+		return h.handleSyncGroup(bodyReader, respWriter, saslSession)
 	case protocol.ApiKeyHeartbeat:
-		return h.handleHeartbeat(bodyReader, respWriter)
+		return h.handleHeartbeat(bodyReader, respWriter, saslSession)
 	case protocol.ApiKeyInitProducerId:
 		return h.handleInitProducerId(bodyReader, respWriter)
 	case protocol.ApiKeyAddPartitionsToTxn:
-		return h.handleAddPartitionsToTxn(bodyReader, respWriter)
+		return h.handleAddPartitionsToTxn(bodyReader, respWriter, saslSession)
 	case protocol.ApiKeyEndTxn:
 		return h.handleEndTxn(bodyReader, respWriter)
 	case protocol.ApiKeySaslHandshake:
@@ -477,7 +496,7 @@ func (h *Handler) handleFetch(bodyReader io.Reader, respWriter io.Writer, sessio
 // PRIVATE METHOD: handleOffsetCommit
 // Description: Handles OffsetCommit (ApiKey 8) requests.
 // ============================================================================
-func (h *Handler) handleOffsetCommit(bodyReader io.Reader, respWriter io.Writer) error {
+func (h *Handler) handleOffsetCommit(bodyReader io.Reader, respWriter io.Writer, session *security.SASLSession) error {
 	req, err := protocol.DecodeOffsetCommitRequest(bodyReader)
 	if err != nil {
 		return err
@@ -485,8 +504,25 @@ func (h *Handler) handleOffsetCommit(bodyReader io.Reader, respWriter io.Writer)
 
 	var topicResponses []protocol.OffsetCommitResponseTopic
 
+	groupAuthorized := h.authorizeGroup(session, req.GroupId, security.OpRead)
+
 	for _, topic := range req.Topics {
 		var partResponses []protocol.OffsetCommitResponsePartition
+
+		if !groupAuthorized || !h.authorizeTopic(session, topic.TopicName, security.OpRead) {
+			for _, p := range topic.Partitions {
+				partResponses = append(partResponses, protocol.OffsetCommitResponsePartition{
+					PartitionIndex: p.PartitionIndex,
+					ErrorCode:      errCodeGroupAuthorizationFailed,
+				})
+			}
+			topicResponses = append(topicResponses, protocol.OffsetCommitResponseTopic{
+				TopicName:  topic.TopicName,
+				Partitions: partResponses,
+			})
+			continue
+		}
+
 		for _, p := range topic.Partitions {
 			err := h.offsetManager.CommitOffset(req.GroupId, topic.TopicName, p.PartitionIndex, p.CommittedOffset, p.Metadata)
 			var errCode int16 = 0
@@ -512,10 +548,15 @@ func (h *Handler) handleOffsetCommit(bodyReader io.Reader, respWriter io.Writer)
 // PRIVATE METHOD: handleOffsetFetch
 // Description: Handles OffsetFetch (ApiKey 9) requests.
 // ============================================================================
-func (h *Handler) handleOffsetFetch(bodyReader io.Reader, respWriter io.Writer) error {
+func (h *Handler) handleOffsetFetch(bodyReader io.Reader, respWriter io.Writer, session *security.SASLSession) error {
 	req, err := protocol.DecodeOffsetFetchRequest(bodyReader)
 	if err != nil {
 		return err
+	}
+
+	if !h.authorizeGroup(session, req.GroupId, security.OpDescribe) {
+		resp := &protocol.OffsetFetchResponse{ErrorCode: errCodeGroupAuthorizationFailed}
+		return protocol.EncodeOffsetFetchResponse(respWriter, resp)
 	}
 
 	var topicResponses []protocol.OffsetFetchResponseTopic
@@ -552,10 +593,15 @@ func (h *Handler) handleOffsetFetch(bodyReader io.Reader, respWriter io.Writer) 
 // PRIVATE METHOD: handleJoinGroup
 // Description: Handles JoinGroup (ApiKey 11) requests.
 // ============================================================================
-func (h *Handler) handleJoinGroup(bodyReader io.Reader, respWriter io.Writer) error {
+func (h *Handler) handleJoinGroup(bodyReader io.Reader, respWriter io.Writer, session *security.SASLSession) error {
 	req, err := protocol.DecodeJoinGroupRequest(bodyReader)
 	if err != nil {
 		return err
+	}
+
+	if !h.authorizeGroup(session, req.GroupId, security.OpRead) {
+		resp := &protocol.JoinGroupResponse{ErrorCode: errCodeGroupAuthorizationFailed}
+		return protocol.EncodeJoinGroupResponse(respWriter, resp)
 	}
 
 	protoMap := make(map[string][]byte)
@@ -615,10 +661,15 @@ func (h *Handler) handleJoinGroup(bodyReader io.Reader, respWriter io.Writer) er
 // PRIVATE METHOD: handleSyncGroup
 // Description: Handles SyncGroup (ApiKey 14) requests.
 // ============================================================================
-func (h *Handler) handleSyncGroup(bodyReader io.Reader, respWriter io.Writer) error {
+func (h *Handler) handleSyncGroup(bodyReader io.Reader, respWriter io.Writer, session *security.SASLSession) error {
 	req, err := protocol.DecodeSyncGroupRequest(bodyReader)
 	if err != nil {
 		return err
+	}
+
+	if !h.authorizeGroup(session, req.GroupId, security.OpRead) {
+		resp := &protocol.SyncGroupResponse{ErrorCode: errCodeGroupAuthorizationFailed}
+		return protocol.EncodeSyncGroupResponse(respWriter, resp)
 	}
 
 	var assignedBytes []byte
@@ -641,10 +692,15 @@ func (h *Handler) handleSyncGroup(bodyReader io.Reader, respWriter io.Writer) er
 // PRIVATE METHOD: handleHeartbeat
 // Description: Handles Heartbeat (ApiKey 12) requests.
 // ============================================================================
-func (h *Handler) handleHeartbeat(bodyReader io.Reader, respWriter io.Writer) error {
+func (h *Handler) handleHeartbeat(bodyReader io.Reader, respWriter io.Writer, session *security.SASLSession) error {
 	req, err := protocol.DecodeHeartbeatRequest(bodyReader)
 	if err != nil {
 		return err
+	}
+
+	if !h.authorizeGroup(session, req.GroupId, security.OpRead) {
+		resp := &protocol.HeartbeatResponse{ErrorCode: errCodeGroupAuthorizationFailed}
+		return protocol.EncodeHeartbeatResponse(respWriter, resp)
 	}
 
 	err = h.groupCoordinator.Heartbeat(req.GroupId, req.MemberId)
@@ -748,7 +804,7 @@ func (h *Handler) handleInitProducerId(bodyReader io.Reader, respWriter io.Write
 // ============================================================================
 // PRIVATE METHOD: handleAddPartitionsToTxn (ApiKey 24)
 // ============================================================================
-func (h *Handler) handleAddPartitionsToTxn(bodyReader io.Reader, respWriter io.Writer) error {
+func (h *Handler) handleAddPartitionsToTxn(bodyReader io.Reader, respWriter io.Writer, session *security.SASLSession) error {
 	req, err := protocol.DecodeAddPartitionsToTxnRequest(bodyReader)
 	if err != nil {
 		return err
@@ -757,6 +813,25 @@ func (h *Handler) handleAddPartitionsToTxn(bodyReader io.Reader, respWriter io.W
 	var results []protocol.AddPartitionsToTxnTopicResult
 	for _, tReq := range req.Topics {
 		var pResults []protocol.AddPartitionsToTxnResult
+
+		// Denied topics are never registered with txnCoordinator below, so
+		// EndTxn — which only ever writes control records to partitions
+		// previously registered here — can never touch a topic this
+		// principal lacks Write access to.
+		if !h.authorizeTopic(session, tReq.TopicName, security.OpWrite) {
+			for _, partId := range tReq.Partitions {
+				pResults = append(pResults, protocol.AddPartitionsToTxnResult{
+					PartitionId: partId,
+					ErrorCode:   errCodeTopicAuthorizationFailed,
+				})
+			}
+			results = append(results, protocol.AddPartitionsToTxnTopicResult{
+				TopicName:  tReq.TopicName,
+				Partitions: pResults,
+			})
+			continue
+		}
+
 		for _, partId := range tReq.Partitions {
 			err := h.txnCoordinator.AddPartitionsToTxn(req.TransactionalId, req.ProducerId, req.ProducerEpoch, tReq.TopicName, []int32{partId})
 			errCode := int16(0)
