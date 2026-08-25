@@ -64,13 +64,42 @@ func NewServer(handler *server.Handler, port int) *UIServer {
 
 	ui.httpServer = &http.Server{
 		Addr:    fmt.Sprintf(":%d", port),
-		Handler: mux,
+		Handler: requireAuthIfSASLEnabled(handler, mux),
 	}
 
 	// Launch background telemetry stream to WebSocket clients
 	go ui.wsStreamLoop()
 
 	return ui
+}
+
+// requireAuthIfSASLEnabled wraps next so every route on the UI's HTTP port —
+// the REST API, the WebSocket telemetry stream, and the static dashboard
+// assets alike — requires the same credentials as the Kafka TCP port
+// whenever -sasl-enabled is on. Without this, an operator who locks down
+// the Kafka protocol with -sasl-enabled/-acl-rules would still leave every
+// topic's raw messages and cluster metadata readable by anyone who can
+// reach -ui-port over plain HTTP, regardless of that configuration.
+//
+// When -sasl-enabled is off (the default, e.g. for local development), the
+// UI remains open exactly as before — this only closes the gap that opens
+// the moment an operator actually turns security on.
+func requireAuthIfSASLEnabled(handler *server.Handler, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !handler.IsSASLRequired() {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		username, password, ok := r.BasicAuth()
+		if !ok || !handler.AuthenticateBasic(username, password) {
+			w.Header().Set("WWW-Authenticate", `Basic realm="kafka-golang UI"`)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }
 
 // Start runs the HTTP management server in the current goroutine.

@@ -92,6 +92,26 @@ func (h *Handler) isSASLRequired() bool {
 	return h.saslRequired
 }
 
+// IsSASLRequired reports whether -sasl-enabled is in effect, i.e. whether
+// the TCP protocol port requires authentication. The Web UI server uses
+// this to decide whether it must also require credentials on its own HTTP
+// port — without it, an operator who locks down the Kafka port gets a false
+// sense of security while the UI still serves every topic's raw messages
+// to anyone who can reach it.
+func (h *Handler) IsSASLRequired() bool {
+	return h.isSASLRequired()
+}
+
+// AuthenticateBasic verifies a username/password pair against the same
+// credential store used for SASL/PLAIN, so the Web UI can reuse -sasl-users
+// accounts for HTTP Basic Auth instead of maintaining a separate identity
+// system.
+func (h *Handler) AuthenticateBasic(username, password string) bool {
+	payload := []byte("\x00" + username + "\x00" + password)
+	_, err := h.saslAuth.AuthenticatePlain(payload)
+	return err == nil
+}
+
 // AddSASLUser registers a user credential for SASL/PLAIN and
 // SASL/SCRAM-SHA-256 authentication (see cmd/broker's -sasl-users flag).
 // Only the salted, derived credential is retained — the plaintext password

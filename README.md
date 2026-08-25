@@ -12,7 +12,7 @@
 - **Automated Log Retention & Compaction**: Background worker (`CleanerWorker`) for time-based retention, size-based limits, and Key Log Compaction.
 - **Transactions & Exactly-Once Semantics**: `TransactionCoordinator`, Producer ID Fencing, sequence deduplication, and Control Record Commit/Abort Markers.
 - **Security & Authentication**: TLS-encrypted TCP listener (`tls.go`), `SASL/PLAIN` & full `SASL/SCRAM-SHA-256` challenge-response authentication (`sasl.go`, `scram.go`) backed by salted PBKDF2 credentials (no plaintext passwords stored, no hardcoded accounts), and an ACL permission manager (`acl.go`) enforced on Produce/Fetch. `-sasl-enabled` actually gates every request until the client authenticates.
-- **Embedded Web Management Dashboard**: Crisp engineering UI at `http://localhost:8085` with WebSocket real-time telemetry (Throughput, RAM, Lag) and paginated message inspector.
+- **Embedded Web Management Dashboard**: Crisp engineering UI at `http://localhost:8085` with WebSocket real-time telemetry (Throughput, RAM, Lag) and paginated message inspector. When `-sasl-enabled` is on, every dashboard route (REST API, WebSocket stream, static assets) requires HTTP Basic Auth against the same `-sasl-users` accounts, so locking down the Kafka port doesn't leave raw message data open on the UI port.
 - **Kafka Protocol Compatibility**: Supports core Kafka binary APIs over raw TCP.
 - **Consumer Group Coordinator**: Manages offset persistence into `__consumer_offsets`, group membership, and rebalancing.
 - **Multi-Broker Replication**: High Watermark (HW) tracking and follower replication loops.
