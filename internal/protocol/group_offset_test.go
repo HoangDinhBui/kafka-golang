@@ -207,3 +207,81 @@ func TestSyncGroupAndHeartbeatProtocol(t *testing.T) {
 		t.Errorf("decoded HeartbeatRequest mismatch.\nExpected: %+v\nGot: %+v", hbReq, decodedHb)
 	}
 }
+
+// ============================================================================
+// TEST: TestFindCoordinatorProtocol
+// Description: Regression test for the missing FindCoordinator (ApiKey 10)
+//              API: real client libraries send this before JoinGroup to
+//              discover the coordinator broker, so without request/response
+//              encoding for it a client cannot even begin the
+//              consumer-group flow.
+// ============================================================================
+func TestFindCoordinatorProtocol(t *testing.T) {
+	req := &FindCoordinatorRequest{Key: "my-consumer-group"}
+
+	var reqBuf bytes.Buffer
+	_ = WriteString(&reqBuf, req.Key)
+
+	decoded, err := DecodeFindCoordinatorRequest(&reqBuf)
+	if err != nil {
+		t.Fatalf("unexpected error decoding FindCoordinatorRequest: %v", err)
+	}
+	if !reflect.DeepEqual(req, decoded) {
+		t.Errorf("decoded FindCoordinatorRequest mismatch.\nExpected: %+v\nGot: %+v", req, decoded)
+	}
+
+	resp := &FindCoordinatorResponse{ErrorCode: 0, NodeId: 1, Host: "127.0.0.1", Port: 9092}
+	var respBuf bytes.Buffer
+	if err := EncodeFindCoordinatorResponse(&respBuf, resp); err != nil {
+		t.Fatalf("EncodeFindCoordinatorResponse failed: %v", err)
+	}
+
+	errCode, err := ReadInt16(&respBuf)
+	if err != nil || errCode != 0 {
+		t.Fatalf("expected ErrorCode 0, got %d, err: %v", errCode, err)
+	}
+	nodeId, err := ReadInt32(&respBuf)
+	if err != nil || nodeId != 1 {
+		t.Fatalf("expected NodeId 1, got %d, err: %v", nodeId, err)
+	}
+	host, err := ReadString(&respBuf)
+	if err != nil || host != "127.0.0.1" {
+		t.Fatalf("expected Host 127.0.0.1, got %q, err: %v", host, err)
+	}
+	port, err := ReadInt32(&respBuf)
+	if err != nil || port != 9092 {
+		t.Fatalf("expected Port 9092, got %d, err: %v", port, err)
+	}
+}
+
+// ============================================================================
+// TEST: TestLeaveGroupProtocol
+// Description: Regression test for the missing LeaveGroup (ApiKey 13) API:
+//              the ApiKey constant existed but no request/response encoding
+//              or handler existed anywhere, so a client sending it got
+//              "unsupported ApiKey" instead of leaving the group cleanly.
+// ============================================================================
+func TestLeaveGroupProtocol(t *testing.T) {
+	req := &LeaveGroupRequest{GroupId: "leave-group", MemberId: "member-1"}
+
+	var reqBuf bytes.Buffer
+	_ = WriteString(&reqBuf, req.GroupId)
+	_ = WriteString(&reqBuf, req.MemberId)
+
+	decoded, err := DecodeLeaveGroupRequest(&reqBuf)
+	if err != nil {
+		t.Fatalf("unexpected error decoding LeaveGroupRequest: %v", err)
+	}
+	if !reflect.DeepEqual(req, decoded) {
+		t.Errorf("decoded LeaveGroupRequest mismatch.\nExpected: %+v\nGot: %+v", req, decoded)
+	}
+
+	var respBuf bytes.Buffer
+	if err := EncodeLeaveGroupResponse(&respBuf, &LeaveGroupResponse{ErrorCode: 0}); err != nil {
+		t.Fatalf("EncodeLeaveGroupResponse failed: %v", err)
+	}
+	errCode, err := ReadInt16(&respBuf)
+	if err != nil || errCode != 0 {
+		t.Fatalf("expected ErrorCode 0, got %d, err: %v", errCode, err)
+	}
+}
