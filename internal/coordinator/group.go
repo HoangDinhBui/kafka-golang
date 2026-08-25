@@ -75,6 +75,7 @@ type GroupCoordinator struct {
 	mu            sync.RWMutex
 	groups        map[string]*ConsumerGroup
 	offsetManager *OffsetManager
+	maxGroups     int // 0 = unlimited
 }
 
 // ============================================================================
@@ -88,16 +89,31 @@ func NewGroupCoordinator(offsetManager *OffsetManager) *GroupCoordinator {
 	}
 }
 
+// SetMaxGroups caps how many distinct consumer groups may exist at once.
+// JoinGroup previously created a brand new group for any never-before-seen
+// GroupId with no limit at all, so a client sending JoinGroup with an
+// ever-changing random group ID could grow this map without bound. 0 (the
+// default) keeps the previous unlimited behavior.
+func (gc *GroupCoordinator) SetMaxGroups(max int) {
+	gc.mu.Lock()
+	defer gc.mu.Unlock()
+	gc.maxGroups = max
+}
+
 // ============================================================================
 // FUNCTION: GetOrCreateGroup
-// Description: Retrieves an existing ConsumerGroup or creates a new Empty group.
+// Description: Retrieves an existing ConsumerGroup, or creates a new Empty
+//              group if the maxGroups cap (if any) has not been reached.
 // ============================================================================
-func (gc *GroupCoordinator) GetOrCreateGroup(groupID string, protocolType string) *ConsumerGroup {
+func (gc *GroupCoordinator) GetOrCreateGroup(groupID string, protocolType string) (*ConsumerGroup, error) {
 	gc.mu.Lock()
 	defer gc.mu.Unlock()
 
 	group, exists := gc.groups[groupID]
 	if !exists {
+		if gc.maxGroups > 0 && len(gc.groups) >= gc.maxGroups {
+			return nil, fmt.Errorf("maximum number of consumer groups (%d) reached", gc.maxGroups)
+		}
 		group = &ConsumerGroup{
 			GroupID:      groupID,
 			State:        GroupStateEmpty,
@@ -107,7 +123,7 @@ func (gc *GroupCoordinator) GetOrCreateGroup(groupID string, protocolType string
 		gc.groups[groupID] = group
 	}
 
-	return group
+	return group, nil
 }
 
 // ============================================================================
@@ -127,7 +143,10 @@ func (gc *GroupCoordinator) AddMember(
 		return nil, nil, errors.New("group_id cannot be empty")
 	}
 
-	group := gc.GetOrCreateGroup(groupID, protocolType)
+	group, err := gc.GetOrCreateGroup(groupID, protocolType)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	group.mu.Lock()
 	defer group.mu.Unlock()
