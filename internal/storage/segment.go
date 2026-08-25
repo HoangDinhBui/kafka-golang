@@ -256,3 +256,135 @@ func (s *Segment) RemoveFiles() error {
 	return nil
 }
 
+// ============================================================================
+// FUNCTION: replaceContents
+// Description: Atomically rewrites this segment's own .log/.index files to
+//              contain exactly the given records — each keeping its
+//              original Offset, since compaction only ever removes records
+//              and must never renumber survivors — then reopens the
+//              segment's file handles against the new files. Used by
+//              CompactLogSegments.
+//
+//              dir MUST be this segment's own directory: the rewritten
+//              files replace seg's originals in place, they are not
+//              written out as a separate copy elsewhere.
+//
+//              The caller MUST hold a lock excluding concurrent Read/
+//              ReadZeroCopy/Append against this segment for the entire
+//              call (PartitionLog.CompactSegments does this) — s.Close()
+//              below invalidates the segment's file handles until they are
+//              reopened a few lines later.
+//
+//              Known limitation: the log and index files are swapped in via
+//              two separate os.Rename calls, which cannot be made atomic
+//              together. If the process is interrupted between them, the
+//              segment could reopen with a stale index paired to the new
+//              (shorter) log file. This fails safe — reads would surface a
+//              decode error rather than silently return wrong data — and is
+//              an accepted, documented limitation for what is an explicitly
+//              opt-in background maintenance feature (see CleanerConfig.
+//              CompactionEnabled), not a correctness guarantee for the
+//              broker's primary write path.
+// ============================================================================
+func (s *Segment) replaceContents(dir string, records []*Record) error {
+	baseName := fmt.Sprintf("%020d", s.baseOffset)
+	logPath := filepath.Join(dir, baseName+".log")
+	indexPath := filepath.Join(dir, baseName+".index")
+	tmpLogPath := logPath + ".compact.tmp"
+	tmpIndexPath := indexPath + ".compact.tmp"
+
+	// Remove any stale temp files left behind by a previously interrupted attempt.
+	_ = os.Remove(tmpLogPath)
+	_ = os.Remove(tmpIndexPath)
+
+	tmpLog, err := os.OpenFile(tmpLogPath, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		return err
+	}
+	tmpIndex, err := NewIndex(tmpIndexPath)
+	if err != nil {
+		_ = tmpLog.Close()
+		_ = os.Remove(tmpLogPath)
+		return err
+	}
+
+	swapped := false
+	defer func() {
+		if !swapped {
+			_ = tmpLog.Close()
+			_ = tmpIndex.Close()
+			_ = os.Remove(tmpLogPath)
+			_ = os.Remove(tmpIndexPath)
+		}
+	}()
+
+	var size int64
+	var lastIndexBytes int64
+	for i, rec := range records {
+		data, err := rec.Marshal()
+		if err != nil {
+			return err
+		}
+
+		// Mirror Segment.Append's own sparse-index cadence: an entry for
+		// the first record, then one whenever indexIntervalBytes have
+		// accumulated since the last entry.
+		if i == 0 || size-lastIndexBytes >= s.indexIntervalBytes {
+			if err := tmpIndex.WriteEntry(rec.Offset, size); err != nil {
+				return err
+			}
+			lastIndexBytes = size
+		}
+
+		if _, err := tmpLog.Write(data); err != nil {
+			return err
+		}
+		size += int64(len(data))
+	}
+
+	if err := tmpLog.Sync(); err != nil {
+		return err
+	}
+	if err := tmpLog.Close(); err != nil {
+		return err
+	}
+	if err := tmpIndex.Close(); err != nil {
+		return err
+	}
+
+	// Close the segment's current handles before replacing the files they
+	// point to — required on Windows, where an open file cannot be renamed
+	// over or replaced.
+	if err := s.Close(); err != nil {
+		return err
+	}
+
+	if err := os.Rename(tmpLogPath, logPath); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpIndexPath, indexPath); err != nil {
+		return err
+	}
+	swapped = true
+
+	newLogFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		return err
+	}
+	newIndex, err := NewIndex(indexPath)
+	if err != nil {
+		_ = newLogFile.Close()
+		return err
+	}
+
+	s.logFile = newLogFile
+	s.index = newIndex
+	s.currentSize = size
+	s.lastIndexBytes = lastIndexBytes
+	// baseOffset and nextOffset are intentionally left unchanged: compaction
+	// only removes records, it never changes the offset range this segment
+	// covers or renumbers the records that survive.
+
+	return nil
+}
+

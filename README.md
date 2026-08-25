@@ -9,12 +9,12 @@
 - **Sequential Commit Log**: High-throughput append-only disk storage (`.log`).
 - **4KB Sparse Indexing**: Fast $O(\log N)$ binary search on disk (`.index`).
 - **Zero-Copy `sendfile` Transfer Engine**: Kernel-level zero-copy file-to-socket streaming (`zero_copy.go`) for zero-allocation Consumer Fetch requests.
-- **Automated Log Retention & Compaction**: Background worker (`CleanerWorker`) for time-based retention, size-based limits, and Key Log Compaction.
+- **Automated Log Retention & Compaction**: Background worker (`CleanerWorker`) for time-based retention, size-based limits, and Key Log Compaction. Compaction (`-enable-compaction`, off by default) atomically rewrites closed segments in place, keeping each key's globally-latest record across the whole partition and dropping tombstones.
 - **Transactions & Exactly-Once Semantics**: `TransactionCoordinator`, Producer ID Fencing, sequence deduplication, and Control Record Commit/Abort Markers.
-- **Security & Authentication**: TLS-encrypted TCP listener (`tls.go`), `SASL/PLAIN` & full `SASL/SCRAM-SHA-256` challenge-response authentication (`sasl.go`, `scram.go`) backed by salted PBKDF2 credentials (no plaintext passwords stored, no hardcoded accounts), and an ACL permission manager (`acl.go`) enforced on Produce/Fetch. `-sasl-enabled` actually gates every request until the client authenticates.
-- **Embedded Web Management Dashboard**: Crisp engineering UI at `http://localhost:8085` with WebSocket real-time telemetry (Throughput, RAM, Lag) and paginated message inspector.
+- **Security & Authentication**: TLS-encrypted TCP listener (`tls.go`), `SASL/PLAIN` & full `SASL/SCRAM-SHA-256` challenge-response authentication (`sasl.go`, `scram.go`) backed by salted PBKDF2 credentials (no plaintext passwords stored, no hardcoded accounts), and an ACL permission manager (`acl.go`) enforced on Produce/Fetch and on consumer-group operations (JoinGroup/SyncGroup/Heartbeat/OffsetCommit/OffsetFetch) via a Group resource type, plus transitively on transactional writes (AddPartitionsToTxn/EndTxn). `-sasl-enabled` actually gates every request until the client authenticates.
+- **Embedded Web Management Dashboard**: Crisp engineering UI at `http://localhost:8085` with WebSocket real-time telemetry (Throughput, RAM, Lag) and paginated message inspector. When `-sasl-enabled` is on, every dashboard route (REST API, WebSocket stream, static assets) requires HTTP Basic Auth against the same `-sasl-users` accounts, so locking down the Kafka port doesn't leave raw message data open on the UI port.
 - **Kafka Protocol Compatibility**: Supports core Kafka binary APIs over raw TCP.
-- **Consumer Group Coordinator**: Manages offset persistence into `__consumer_offsets`, group membership, and rebalancing.
+- **Consumer Group Coordinator**: Manages offset persistence into `__consumer_offsets`, group membership, and rebalancing, including `FindCoordinator` (this single-broker instance always identifies itself) and `LeaveGroup` for clean member departure.
 - **Multi-Broker Replication**: High Watermark (HW) tracking and follower replication loops.
 - **KRaft Consensus Engine**: Built-in Raft metadata controller state machine without ZooKeeper.
 - **Built-in Benchmark Tools**: Multi-threaded stress test tool (`cmd/stress_test`) achieving **22,000+ msgs/sec** (1,000,000 requests at < 0.9ms latency).
@@ -65,12 +65,15 @@ Access the Web Management Dashboard in your browser:
 | `-retention-hours` | `168` | Log segment retention limit in hours (default 7 days) |
 | `-retention-bytes` | `-1` | Max partition log disk limit in bytes (`-1` = unlimited) |
 | `-cleaner-interval-sec` | `60` | Execution ticker interval for background cleaner worker in seconds |
+| `-enable-compaction` | `false` | Enable key-based log compaction on closed segments during cleaner runs (permanently drops superseded records and tombstones) |
 | `-tls` | `false` | Enable TLS encryption on the TCP listener |
 | `-tls-cert` | `""` | Path to a PEM certificate file for TLS (generates a self-signed cert if empty) |
 | `-tls-key` | `""` | Path to a PEM private key file for TLS (generates a self-signed cert if empty) |
 | `-sasl-enabled` | `false` | Require SASL/PLAIN or SASL/SCRAM-SHA-256 authentication before serving any other request |
 | `-sasl-users` | `""` | Comma-separated `user:password` pairs to register for SASL auth (e.g. `admin:secret,alice:pass`). No accounts are seeded by default. |
 | `-acl-rules` | `""` | Comma-separated ACL rules as `principal\|resourceType\|resourceName\|operation\|permission` (e.g. `User:alice\|Topic\|orders\|Write\|Allow`). With no rules, all access is allowed. |
+| `-max-partitions` | `10000` | Maximum number of distinct topic-partitions this broker will create (pass `<= 0` to disable) |
+| `-max-consumer-groups` | `10000` | Maximum number of distinct consumer groups this broker will create (pass `<= 0` to disable) |
 
 ---
 

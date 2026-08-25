@@ -117,3 +117,38 @@ func TestGroupCoordinator_HeartbeatAndTimeout(t *testing.T) {
 		t.Errorf("expected group members to be empty after timeout eviction, got %d", len(group.Members))
 	}
 }
+
+// ============================================================================
+// TEST: TestGroupCoordinator_MaxGroups
+// Description: Regression test for unbounded resource growth: JoinGroup
+//              previously created a brand new ConsumerGroup for any
+//              never-before-seen GroupId with no limit at all, so a client
+//              could grow gc.groups without bound just by sending an
+//              ever-changing group ID. Verifies SetMaxGroups caps distinct
+//              groups while still allowing existing groups to accept new
+//              members past the cap, and that 0 (the default) stays
+//              unlimited.
+// ============================================================================
+func TestGroupCoordinator_MaxGroups(t *testing.T) {
+	om := NewOffsetManager()
+	gc := NewGroupCoordinator(om)
+	gc.SetMaxGroups(2)
+
+	protocols := map[string][]byte{"range": []byte("metadata")}
+
+	if _, _, err := gc.AddMember("group-a", "client-1", "127.0.0.1", 10000, 30000, "consumer", protocols); err != nil {
+		t.Fatalf("unexpected error creating group 1/2: %v", err)
+	}
+	if _, _, err := gc.AddMember("group-b", "client-1", "127.0.0.1", 10000, 30000, "consumer", protocols); err != nil {
+		t.Fatalf("unexpected error creating group 2/2: %v", err)
+	}
+
+	if _, _, err := gc.AddMember("group-c", "client-1", "127.0.0.1", 10000, 30000, "consumer", protocols); err == nil {
+		t.Error("expected creating a 3rd group past the cap of 2 to fail")
+	}
+
+	// A second member joining an EXISTING group must still work past the cap.
+	if _, _, err := gc.AddMember("group-a", "client-2", "127.0.0.1", 10000, 30000, "consumer", protocols); err != nil {
+		t.Errorf("expected joining an existing group to succeed even at the group cap: %v", err)
+	}
+}

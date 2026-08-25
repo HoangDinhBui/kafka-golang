@@ -809,6 +809,358 @@ func TestHandler_Produce_RejectsPathTraversalTopicName(t *testing.T) {
 	}
 }
 
+// decodeLeadingErrorCode reads just the first int16 of a response body —
+// valid for JoinGroupResponse, SyncGroupResponse, HeartbeatResponse, and
+// (after the EncodeOffsetFetchResponse fix in this change) OffsetFetchResponse,
+// which all write ErrorCode as their very first field.
+func decodeLeadingErrorCode(t *testing.T, respBody []byte) int16 {
+	t.Helper()
+	code, err := protocol.ReadInt16(bytes.NewReader(respBody))
+	if err != nil {
+		t.Fatalf("failed to read leading error code: %v", err)
+	}
+	return code
+}
+
+// decodeTopicPartitionErrorCodes decodes the common
+// "topicsCount{topicName,partitionsCount{id,errorCode}}" response shape
+// shared by OffsetCommitResponse and AddPartitionsToTxnResponse, returning
+// each topic's per-partition error codes.
+func decodeTopicPartitionErrorCodes(t *testing.T, respBody []byte) map[string][]int16 {
+	t.Helper()
+	r := bytes.NewReader(respBody)
+	result := make(map[string][]int16)
+
+	topicCount, err := protocol.ReadInt32(r)
+	if err != nil {
+		t.Fatalf("failed to read topic count: %v", err)
+	}
+	for i := int32(0); i < topicCount; i++ {
+		topicName, err := protocol.ReadString(r)
+		if err != nil {
+			t.Fatalf("failed to read topic name: %v", err)
+		}
+		partCount, err := protocol.ReadInt32(r)
+		if err != nil {
+			t.Fatalf("failed to read partition count: %v", err)
+		}
+		var codes []int16
+		for j := int32(0); j < partCount; j++ {
+			if _, err := protocol.ReadInt32(r); err != nil { // partition id/index
+				t.Fatalf("failed to read partition id: %v", err)
+			}
+			code, err := protocol.ReadInt16(r)
+			if err != nil {
+				t.Fatalf("failed to read partition error code: %v", err)
+			}
+			codes = append(codes, code)
+		}
+		result[topicName] = codes
+	}
+	return result
+}
+
+// authenticatedTestSession returns a SASLSession already authenticated as
+// username via SASL/PLAIN, for tests that call handler.HandleRequest
+// directly rather than over a real TCP connection.
+func authenticatedTestSession(t *testing.T, handler *Handler, username, password string) *security.SASLSession {
+	t.Helper()
+	session := security.NewSASLSession()
+	session.SetMechanism("PLAIN")
+	if _, done, _, err := handler.saslAuth.Authenticate(session, []byte("\x00"+username+"\x00"+password)); err != nil || !done {
+		t.Fatalf("failed to authenticate test session: done=%v err=%v", done, err)
+	}
+	return session
+}
+
+// ============================================================================
+// TEST: TestHandler_ACLAuthorization_GroupAndTxnHandlers
+// Description: Regression test for the finding that ACL enforcement only
+//              covered Produce/Fetch — JoinGroup, SyncGroup, Heartbeat,
+//              OffsetCommit, OffsetFetch, and AddPartitionsToTxn never
+//              checked ACLs at all, and security.ResourceTypeGroup had no
+//              call site anywhere. Verifies each now denies a principal
+//              without the matching Group/Topic ACL rule, and that
+//              AddPartitionsToTxn's Write check transitively protects
+//              EndTxn (a denied topic's control record is never written).
+// ============================================================================
+func TestHandler_ACLAuthorization_GroupAndTxnHandlers(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "kafka_acl_group_test_*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	handler := NewHandler(tmpDir, 1, "127.0.0.1", 0)
+	if err := handler.AddSASLUser("grace", "grace-pass"); err != nil {
+		t.Fatalf("AddSASLUser failed: %v", err)
+	}
+	handler.AddACLRule(security.ACLRule{
+		Principal:      "grace",
+		ResourceType:   security.ResourceTypeGroup,
+		ResourceName:   "restricted-group",
+		Operation:      security.OpAll,
+		PermissionType: security.PermDeny,
+	})
+	handler.AddACLRule(security.ACLRule{
+		Principal:      "grace",
+		ResourceType:   security.ResourceTypeTopic,
+		ResourceName:   "restricted-topic",
+		Operation:      security.OpWrite,
+		PermissionType: security.PermDeny,
+	})
+
+	session := authenticatedTestSession(t, handler, "grace", "grace-pass")
+
+	call := func(apiKey int16, body *bytes.Buffer, corrId int32) []byte {
+		header := &protocol.RequestHeader{ApiKey: apiKey, CorrelationId: corrId, ClientId: "acl-group-test"}
+		respBuf := new(bytes.Buffer)
+		if err := handler.HandleRequest(header, body, respBuf, session); err != nil {
+			t.Fatalf("HandleRequest(ApiKey=%d) failed: %v", apiKey, err)
+		}
+		return respBuf.Bytes()
+	}
+
+	t.Run("JoinGroup denied on restricted-group", func(t *testing.T) {
+		body := new(bytes.Buffer)
+		_ = protocol.WriteString(body, "restricted-group")
+		_ = protocol.WriteInt32(body, 10000)
+		_ = protocol.WriteInt32(body, 10000)
+		_ = protocol.WriteString(body, "")
+		_ = protocol.WriteString(body, "consumer")
+		_ = protocol.WriteInt32(body, 0) // no protocols
+		resp := call(protocol.ApiKeyJoinGroup, body, 1)
+		if code := decodeLeadingErrorCode(t, resp); code != errCodeGroupAuthorizationFailed {
+			t.Errorf("expected GROUP_AUTHORIZATION_FAILED (%d), got %d", errCodeGroupAuthorizationFailed, code)
+		}
+	})
+
+	t.Run("JoinGroup allowed on open-group", func(t *testing.T) {
+		body := new(bytes.Buffer)
+		_ = protocol.WriteString(body, "open-group")
+		_ = protocol.WriteInt32(body, 10000)
+		_ = protocol.WriteInt32(body, 10000)
+		_ = protocol.WriteString(body, "")
+		_ = protocol.WriteString(body, "consumer")
+		_ = protocol.WriteInt32(body, 0)
+		resp := call(protocol.ApiKeyJoinGroup, body, 2)
+		if code := decodeLeadingErrorCode(t, resp); code != 0 {
+			t.Errorf("expected ErrorCode 0 for an unrestricted group, got %d", code)
+		}
+	})
+
+	t.Run("SyncGroup denied on restricted-group", func(t *testing.T) {
+		body := new(bytes.Buffer)
+		_ = protocol.WriteString(body, "restricted-group")
+		_ = protocol.WriteInt32(body, 1)
+		_ = protocol.WriteString(body, "member-1")
+		_ = protocol.WriteInt32(body, 0) // no assignments
+		resp := call(protocol.ApiKeySyncGroup, body, 3)
+		if code := decodeLeadingErrorCode(t, resp); code != errCodeGroupAuthorizationFailed {
+			t.Errorf("expected GROUP_AUTHORIZATION_FAILED (%d), got %d", errCodeGroupAuthorizationFailed, code)
+		}
+	})
+
+	t.Run("Heartbeat denied on restricted-group", func(t *testing.T) {
+		body := new(bytes.Buffer)
+		_ = protocol.WriteString(body, "restricted-group")
+		_ = protocol.WriteInt32(body, 1)
+		_ = protocol.WriteString(body, "member-1")
+		resp := call(protocol.ApiKeyHeartbeat, body, 4)
+		if code := decodeLeadingErrorCode(t, resp); code != errCodeGroupAuthorizationFailed {
+			t.Errorf("expected GROUP_AUTHORIZATION_FAILED (%d), got %d", errCodeGroupAuthorizationFailed, code)
+		}
+	})
+
+	t.Run("OffsetFetch denied on restricted-group", func(t *testing.T) {
+		body := new(bytes.Buffer)
+		_ = protocol.WriteString(body, "restricted-group")
+		_ = protocol.WriteInt32(body, 0) // no topics
+		resp := call(protocol.ApiKeyOffsetFetch, body, 5)
+		if code := decodeLeadingErrorCode(t, resp); code != errCodeGroupAuthorizationFailed {
+			t.Errorf("expected GROUP_AUTHORIZATION_FAILED (%d), got %d", errCodeGroupAuthorizationFailed, code)
+		}
+	})
+
+	t.Run("OffsetCommit denied on restricted-group", func(t *testing.T) {
+		body := new(bytes.Buffer)
+		_ = protocol.WriteString(body, "restricted-group")
+		_ = protocol.WriteInt32(body, 1)
+		_ = protocol.WriteString(body, "member-1")
+		_ = protocol.WriteInt64(body, -1)
+		_ = protocol.WriteInt32(body, 1) // 1 topic
+		_ = protocol.WriteString(body, "open-topic")
+		_ = protocol.WriteInt32(body, 1) // 1 partition
+		_ = protocol.WriteInt32(body, 0)
+		_ = protocol.WriteInt64(body, 100)
+		_ = protocol.WriteString(body, "")
+		resp := call(protocol.ApiKeyOffsetCommit, body, 6)
+		codes := decodeTopicPartitionErrorCodes(t, resp)
+		if len(codes["open-topic"]) != 1 || codes["open-topic"][0] != errCodeGroupAuthorizationFailed {
+			t.Errorf("expected GROUP_AUTHORIZATION_FAILED (%d) for a denied group even on an open topic, got %v", errCodeGroupAuthorizationFailed, codes)
+		}
+	})
+
+	t.Run("AddPartitionsToTxn denied on restricted-topic, and EndTxn never touches it", func(t *testing.T) {
+		initBody := new(bytes.Buffer)
+		_ = protocol.WriteNullableString(initBody, strPtr("txn-acl-test"))
+		_ = protocol.WriteInt32(initBody, 60000)
+		initResp := call(protocol.ApiKeyInitProducerId, initBody, 7)
+		initR := bytes.NewReader(initResp)
+		if _, err := protocol.ReadInt16(initR); err != nil { // ErrorCode
+			t.Fatalf("failed to read InitProducerId error code: %v", err)
+		}
+		producerId, err := protocol.ReadInt64(initR)
+		if err != nil {
+			t.Fatalf("failed to read ProducerId: %v", err)
+		}
+		producerEpoch, err := protocol.ReadInt16(initR)
+		if err != nil {
+			t.Fatalf("failed to read ProducerEpoch: %v", err)
+		}
+
+		addBody := new(bytes.Buffer)
+		_ = protocol.WriteString(addBody, "txn-acl-test")
+		_ = protocol.WriteInt64(addBody, producerId)
+		_ = protocol.WriteInt16(addBody, producerEpoch)
+		_ = protocol.WriteInt32(addBody, 1) // 1 topic
+		_ = protocol.WriteString(addBody, "restricted-topic")
+		_ = protocol.WriteInt32(addBody, 1) // 1 partition
+		_ = protocol.WriteInt32(addBody, 0)
+		addResp := call(protocol.ApiKeyAddPartitionsToTxn, addBody, 8)
+		codes := decodeTopicPartitionErrorCodes(t, addResp)
+		if len(codes["restricted-topic"]) != 1 || codes["restricted-topic"][0] != errCodeTopicAuthorizationFailed {
+			t.Errorf("expected TOPIC_AUTHORIZATION_FAILED (%d), got %v", errCodeTopicAuthorizationFailed, codes)
+		}
+
+		endBody := new(bytes.Buffer)
+		_ = protocol.WriteString(endBody, "txn-acl-test")
+		_ = protocol.WriteInt64(endBody, producerId)
+		_ = protocol.WriteInt16(endBody, producerEpoch)
+		_ = protocol.WriteInt8(endBody, 1) // committed
+		_ = call(protocol.ApiKeyEndTxn, endBody, 9)
+
+		if _, err := os.Stat(filepath.Join(tmpDir, "restricted-topic-0")); err == nil {
+			t.Error("expected EndTxn to never write a control record for a topic denied at AddPartitionsToTxn")
+		}
+	})
+}
+
+func strPtr(s string) *string { return &s }
+
+// ============================================================================
+// TEST: TestHandler_FindCoordinator
+// Description: Regression test for the missing FindCoordinator (ApiKey 10)
+//              handler: real client libraries send this before JoinGroup to
+//              discover the coordinator broker, so without a handler for it
+//              a client could not even begin the consumer-group flow
+//              (previously "unsupported ApiKey"). Verifies the broker
+//              answers by identifying itself — there is no real
+//              multi-broker cluster to route to (see internal/replication /
+//              internal/consensus, unwired from cmd/broker).
+// ============================================================================
+func TestHandler_FindCoordinator(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "kafka_find_coordinator_test_*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	handler := NewHandler(tmpDir, 7, "10.0.0.5", 9092)
+
+	header := &protocol.RequestHeader{ApiKey: protocol.ApiKeyGroupCoordinator, CorrelationId: 1, ClientId: "find-coord-test"}
+	body := new(bytes.Buffer)
+	_ = protocol.WriteString(body, "some-consumer-group")
+	respBuf := new(bytes.Buffer)
+	if err := handler.HandleRequest(header, body, respBuf, security.NewSASLSession()); err != nil {
+		t.Fatalf("HandleRequest failed: %v", err)
+	}
+
+	r := bytes.NewReader(respBuf.Bytes())
+	errCode, _ := protocol.ReadInt16(r)
+	if errCode != 0 {
+		t.Fatalf("expected ErrorCode 0, got %d", errCode)
+	}
+	nodeId, _ := protocol.ReadInt32(r)
+	if nodeId != 7 {
+		t.Errorf("expected the broker to identify itself as coordinator (NodeId 7), got %d", nodeId)
+	}
+	host, _ := protocol.ReadString(r)
+	if host != "10.0.0.5" {
+		t.Errorf("expected Host 10.0.0.5, got %q", host)
+	}
+	port, _ := protocol.ReadInt32(r)
+	if port != 9092 {
+		t.Errorf("expected Port 9092, got %d", port)
+	}
+}
+
+// ============================================================================
+// TEST: TestHandler_LeaveGroup
+// Description: Regression test for the missing LeaveGroup (ApiKey 13)
+//              handler: the ApiKey constant existed but nothing decoded,
+//              encoded, or handled it, so a client trying to leave a group
+//              cleanly got "unsupported ApiKey" and had to wait out a
+//              session timeout instead. Verifies leaving actually removes
+//              the member, and that the group ACL check (added alongside
+//              JoinGroup/SyncGroup/Heartbeat) also applies here.
+// ============================================================================
+func TestHandler_LeaveGroup(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "kafka_leave_group_test_*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	handler := NewHandler(tmpDir, 1, "127.0.0.1", 0)
+	if err := handler.AddSASLUser("grace", "grace-pass"); err != nil {
+		t.Fatalf("AddSASLUser failed: %v", err)
+	}
+	handler.AddACLRule(security.ACLRule{
+		Principal:      "grace",
+		ResourceType:   security.ResourceTypeGroup,
+		ResourceName:   "restricted-leave-group",
+		Operation:      security.OpAll,
+		PermissionType: security.PermDeny,
+	})
+	session := authenticatedTestSession(t, handler, "grace", "grace-pass")
+
+	sendLeave := func(groupId, memberId string) int16 {
+		header := &protocol.RequestHeader{ApiKey: protocol.ApiKeyLeaveGroup, CorrelationId: 1, ClientId: "leave-group-test"}
+		body := new(bytes.Buffer)
+		_ = protocol.WriteString(body, groupId)
+		_ = protocol.WriteString(body, memberId)
+		respBuf := new(bytes.Buffer)
+		if err := handler.HandleRequest(header, body, respBuf, session); err != nil {
+			t.Fatalf("HandleRequest failed: %v", err)
+		}
+		code, _ := protocol.ReadInt16(bytes.NewReader(respBuf.Bytes()))
+		return code
+	}
+
+	restrictedGroup, restrictedMember, err := handler.GetGroupCoordinator().AddMember("restricted-leave-group", "client-1", "127.0.0.1", 10000, 10000, "consumer", map[string][]byte{"range": {}})
+	if err != nil {
+		t.Fatalf("AddMember failed: %v", err)
+	}
+	if code := sendLeave(restrictedGroup.GroupID, restrictedMember.MemberID); code != errCodeGroupAuthorizationFailed {
+		t.Errorf("expected GROUP_AUTHORIZATION_FAILED (%d) leaving a restricted group, got %d", errCodeGroupAuthorizationFailed, code)
+	}
+	if _, exists := restrictedGroup.Members[restrictedMember.MemberID]; !exists {
+		t.Error("expected the member to remain in the group after a denied LeaveGroup")
+	}
+
+	openGroup, openMember, err := handler.GetGroupCoordinator().AddMember("open-leave-group", "client-2", "127.0.0.1", 10000, 10000, "consumer", map[string][]byte{"range": {}})
+	if err != nil {
+		t.Fatalf("AddMember failed: %v", err)
+	}
+	if code := sendLeave(openGroup.GroupID, openMember.MemberID); code != 0 {
+		t.Fatalf("expected LeaveGroup to succeed on an unrestricted group, got ErrorCode %d", code)
+	}
+	if _, exists := openGroup.Members[openMember.MemberID]; exists {
+		t.Error("expected the member to be removed from the group after a successful LeaveGroup")
+	}
+}
+
 func TestIsValidTopicName(t *testing.T) {
 	valid := []string{"orders", "my.topic.name", "topic_with_underscores", "topic-with-dashes", "__consumer_offsets"}
 	for _, name := range valid {
@@ -822,5 +1174,65 @@ func TestIsValidTopicName(t *testing.T) {
 		if isValidTopicName(name) {
 			t.Errorf("expected %q to be rejected as an invalid topic name", name)
 		}
+	}
+}
+
+// ============================================================================
+// TEST: TestHandler_MaxPartitions
+// Description: Regression test for unbounded resource growth:
+//              getOrCreatePartitionLog previously created a new directory
+//              and open file handles for any never-before-seen topic name
+//              with no limit at all, so a client Producing to an
+//              ever-changing stream of valid topic names could grow disk
+//              usage and fd count without bound. Verifies SetMaxPartitions
+//              caps distinct topic-partitions while still allowing
+//              already-created ones to keep accepting writes.
+// ============================================================================
+func TestHandler_MaxPartitions(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "kafka_max_partitions_test_*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	handler := NewHandler(tmpDir, 1, "127.0.0.1", 0)
+	handler.SetMaxPartitions(2)
+
+	session := security.NewSASLSession()
+	produce := func(topic string, corrId int32) int16 {
+		header := &protocol.RequestHeader{ApiKey: protocol.ApiKeyProduce, CorrelationId: corrId, ClientId: "max-partitions-test"}
+		body := new(bytes.Buffer)
+		_ = protocol.EncodeProduceRequest(body, &protocol.ProduceRequest{
+			Acks:    1,
+			Timeout: 1000,
+			Topics: []protocol.TopicProduceData{{
+				TopicName:  topic,
+				Partitions: []protocol.PartitionProduceData{{PartitionId: 0, RecordsData: mustMarshalRecord(t, "payload")}},
+			}},
+		})
+		respBuf := new(bytes.Buffer)
+		if err := handler.HandleRequest(header, body, respBuf, session); err != nil {
+			t.Fatalf("HandleRequest failed: %v", err)
+		}
+		respWithCorrId := new(bytes.Buffer)
+		_ = protocol.WriteInt32(respWithCorrId, corrId)
+		respWithCorrId.Write(respBuf.Bytes())
+		resp := decodeProduceResponse(t, respWithCorrId.Bytes())
+		return resp.Topics[0].Partitions[0].ErrorCode
+	}
+
+	if code := produce("topic-a", 1); code != 0 {
+		t.Errorf("expected topic 1/2 to succeed, got ErrorCode %d", code)
+	}
+	if code := produce("topic-b", 2); code != 0 {
+		t.Errorf("expected topic 2/2 to succeed, got ErrorCode %d", code)
+	}
+	if code := produce("topic-c", 3); code == 0 {
+		t.Error("expected a 3rd distinct topic-partition past the cap of 2 to fail")
+	}
+
+	// An already-created topic-partition must still accept writes past the cap.
+	if code := produce("topic-a", 4); code != 0 {
+		t.Errorf("expected an existing topic-partition to keep working at the cap, got ErrorCode %d", code)
 	}
 }

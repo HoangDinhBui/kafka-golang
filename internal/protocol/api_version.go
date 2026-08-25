@@ -38,6 +38,8 @@ func DefaultApiVersionResponse() *ApiVersionResponse {
 			{ApiKey: ApiKeyAddPartitionsToTxn, MinVersion: 0, MaxVersion: 3},
 			{ApiKey: ApiKeyEndTxn, MinVersion: 0, MaxVersion: 3},
 			{ApiKey: ApiKeySaslAuthenticate, MinVersion: 0, MaxVersion: 1},
+			{ApiKey: ApiKeyGroupCoordinator, MinVersion: 0, MaxVersion: 0},
+			{ApiKey: ApiKeyLeaveGroup, MinVersion: 0, MaxVersion: 0},
 		},
 	}
 }
